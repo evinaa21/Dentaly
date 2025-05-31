@@ -1,10 +1,9 @@
 <?php
-// Include database connection
 include '../config/db.php';
 
 // Define page title *before* including header
 $page_title = 'View Appointment Details';
-include '../includes/header.php'; // Include the header with the sidebar
+include '../includes/header.php';
 
 // Check if the user is actually an admin - redirect if not
 if ($_SESSION['role'] !== 'admin') {
@@ -16,7 +15,7 @@ if ($_SESSION['role'] !== 'admin') {
 $appointment_id = null;
 $appointment = null;
 $message = '';
-$message_class = 'alert-danger'; // Default to danger for errors
+$message_class = 'alert-danger';
 
 if (!isset($_GET['id']) || empty($_GET['id'])) {
     $message = "Invalid or missing appointment ID.";
@@ -24,27 +23,29 @@ if (!isset($_GET['id']) || empty($_GET['id'])) {
     $appointment_id = intval($_GET['id']);
 
     try {
-        // Fetch appointment details with joins
+        // Fetch appointment details with joins - Fixed query
         $query = "
             SELECT
                 a.id AS appointment_id,
                 p.id AS patient_id,
                 CONCAT(p.first_name, ' ', p.last_name) AS patient_name,
                 p.contact_number AS patient_contact,
-                pu.email AS patient_email, -- CORRECTED: Get email from patient's user record
                 p.address AS patient_address,
                 d.name AS doctor_name,
+
                 s.service_name,
                 s.description AS service_description,
                 s.price AS service_price,
                 a.appointment_date,
                 a.status,
-                a.created_at
+                a.notes,
+                a.created_at,
+                pu.email AS patient_email
             FROM appointments a
             JOIN patients p ON a.patient_id = p.id
-            JOIN users d ON a.doctor_id = d.id -- Join for Doctor
+            JOIN users d ON a.doctor_id = d.id
             JOIN services s ON a.service_id = s.id
-            JOIN users pu ON p.user_id = pu.id -- ADDED JOIN: Join for Patient's User record
+            LEFT JOIN users pu ON p.user_id = pu.id
             WHERE a.id = :appointment_id
         ";
         $stmt = $conn->prepare($query);
@@ -53,12 +54,11 @@ if (!isset($_GET['id']) || empty($_GET['id'])) {
         $appointment = $stmt->fetch(PDO::FETCH_ASSOC);
 
         if (!$appointment) {
-            $message = "Appointment with ID $appointment_id not found.";
-            $appointment = null; // Ensure appointment is null if not found
+            $message = "Appointment not found.";
+            $appointment = null;
         }
     } catch (PDOException $e) {
         $message = "Database Query Failed: " . $e->getMessage();
-        // error_log("View Appointment Error: " . $e->getMessage()); // Log error in production
         $appointment = null;
     }
 }
@@ -68,7 +68,7 @@ if (!isset($_GET['id']) || empty($_GET['id'])) {
 <div class="d-flex justify-content-between align-items-center mb-4">
     <h2 class="m-0">Appointment Details</h2>
     <div>
-        <?php if ($appointment): // Show edit button only if appointment exists ?>
+        <?php if ($appointment): ?>
             <a href="edit_appointment.php?id=<?php echo htmlspecialchars($appointment_id); ?>" class="btn btn-warning me-2">
                 <i class="fas fa-edit me-2"></i> Edit Appointment
             </a>
@@ -86,13 +86,12 @@ if (!isset($_GET['id']) || empty($_GET['id'])) {
     </div>
 <?php endif; ?>
 
-
-<?php if ($appointment): // Only display card if appointment data is available ?>
+<?php if ($appointment): ?>
     <div class="card shadow-sm mb-4">
         <div class="card-header d-flex justify-content-between align-items-center">
             <span>
                 <i class="fas fa-calendar-check me-2"></i>
-                Appointment #<?php echo htmlspecialchars($appointment['appointment_id']); ?>
+                Appointment Details
                 <span class="badge rounded-pill ms-2 <?php
                 switch ($appointment['status']) {
                     case 'completed':
@@ -103,7 +102,7 @@ if (!isset($_GET['id']) || empty($_GET['id'])) {
                         break;
                     default:
                         echo 'bg-warning text-dark';
-                        break; // Pending
+                        break;
                 }
                 ?>">
                     <?php echo ucfirst(htmlspecialchars($appointment['status'])); ?>
@@ -128,6 +127,11 @@ if (!isset($_GET['id']) || empty($_GET['id'])) {
 
                     <p class="mb-1"><strong>Status:</strong></p>
                     <p class="text-muted"><?php echo ucfirst(htmlspecialchars($appointment['status'])); ?></p>
+
+                    <?php if (!empty($appointment['notes'])): ?>
+                        <p class="mb-1"><strong>Notes:</strong></p>
+                        <p class="text-muted"><?php echo nl2br(htmlspecialchars($appointment['notes'])); ?></p>
+                    <?php endif; ?>
                 </div>
 
                 <!-- Patient Details Section -->
@@ -169,10 +173,8 @@ if (!isset($_GET['id']) || empty($_GET['id'])) {
                         $<?php echo htmlspecialchars(number_format($appointment['service_price'] ?? 0, 2)); ?></p>
                 </div>
             </div>
-        </div> <!-- /card-body -->
-    </div> <!-- /card -->
+        </div>
+    </div>
 <?php endif; ?>
 
-<?php
-include '../includes/footer.php'; // Includes closing tags and global scripts
-?>
+<?php include '../includes/footer.php'; ?>

@@ -1,5 +1,19 @@
 <?php
-// Define page title *before* including header
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
+include '../config/db.php';
+
+// --- Handle form submissions and redirects FIRST ---
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_details'])) {
+    // ... process data ...
+    // Redirect logic now happens BEFORE any output
+    $_SESSION['flash_message'] = ['type' => 'success', 'text' => 'Details updated.']; // Example flash message
+    header("Location: my_profile.php"); // Or my_profile.php?status=updated
+    exit;
+}
+
+// --- Define page title *before* including header
 $page_title = 'My Profile';
 include '../includes/header.php'; // Include the shared header with the sidebar
 

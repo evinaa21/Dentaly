@@ -7,114 +7,144 @@ $page_title = 'Manage Appointments';
 include '../includes/header.php'; // Includes session check, db connection (if needed), sidebar, and starts main-content div
 
 // Check if the user is actually an admin - redirect if not (or adjust role check as needed)
-if ($_SESSION['role'] !== 'admin') {
+if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'admin') {
     echo '<div class="alert alert-danger m-3">Access Denied. You do not have permission to view this page.</div>';
     include '../includes/footer.php';
     exit;
 }
 
 $message = ''; // For success/error messages
+$message_class = 'alert-info'; // Default
+
+// AUTO-CANCEL PAST APPOINTMENTS
+try {
+    $auto_cancel_query = "
+        UPDATE appointments 
+        SET status = 'canceled' 
+        WHERE status = 'pending' 
+        AND appointment_date < NOW()
+    ";
+    $auto_cancel_stmt = $conn->prepare($auto_cancel_query);
+    $auto_cancel_stmt->execute();
+
+    $affected_rows = $auto_cancel_stmt->rowCount();
+    if ($affected_rows > 0) {
+        // Check if a message is already set from delete operation
+        if (!empty($message)) {
+            $message .= " Additionally, $affected_rows past pending appointments were automatically canceled.";
+        } else {
+            $message = "$affected_rows past pending appointments were automatically canceled.";
+        }
+        $message_class = 'alert-info'; // Keep as info or change if needed
+    }
+} catch (PDOException $e) {
+    error_log("Auto-cancel error: " . $e->getMessage());
+}
 
 // Handle Delete Appointment
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['delete_id'])) {
     $delete_id = intval($_POST['delete_id']);
-    try {
-        // Delete the appointment
-        $delete_query = "DELETE FROM appointments WHERE id = :id";
-        $delete_stmt = $conn->prepare($delete_query);
-        $delete_stmt->bindParam(':id', $delete_id, PDO::PARAM_INT);
-        if ($delete_stmt->execute()) {
-            $message = "Appointment (ID: $delete_id) deleted successfully!";
-            // Use a success class for styling
-            $message_class = 'alert-success';
-        } else {
-            $message = "Failed to delete the appointment.";
-            $message_class = 'alert-danger';
-        }
-    } catch (PDOException $e) {
-        $message = "Error deleting appointment: " . $e->getMessage();
+    if ($delete_id <= 0) {
+        $message = "Invalid appointment ID for deletion.";
         $message_class = 'alert-danger';
+    } else {
+        try {
+            $delete_query = "DELETE FROM appointments WHERE id = :id";
+            $delete_stmt = $conn->prepare($delete_query);
+            $delete_stmt->bindParam(':id', $delete_id, PDO::PARAM_INT);
+
+            if ($delete_stmt->execute()) {
+                if ($delete_stmt->rowCount() > 0) {
+                    $message = "Appointment deleted successfully!";
+                    $message_class = 'alert-success';
+                } else {
+                    $message = "Appointment not found or already deleted.";
+                    $message_class = 'alert-warning';
+                }
+            } else {
+                $message = "Failed to delete appointment.";
+                $message_class = 'alert-danger';
+            }
+        } catch (PDOException $e) {
+            $message = "Error deleting appointment: " . $e->getMessage();
+            $message_class = 'alert-danger';
+            // error_log("Delete Appointment Error: " . $e->getMessage());
+        }
     }
 }
 
 // Fetch all appointments with patient, doctor, and service details
 try {
     $query = "
-        SELECT
-            a.id AS appointment_id,
+        SELECT 
+            a.id, a.appointment_date, a.status, a.notes,
             CONCAT(p.first_name, ' ', p.last_name) AS patient_name,
-            d.name AS doctor_name,
-            s.service_name,
-            a.appointment_date,
-            a.status
+            u.name AS doctor_name,
+            s.service_name, s.price
         FROM appointments a
         JOIN patients p ON a.patient_id = p.id
-        JOIN users d ON a.doctor_id = d.id
+        JOIN users u ON a.doctor_id = u.id
         JOIN services s ON a.service_id = s.id
-        ORDER BY a.appointment_date DESC -- Show most recent first, or ASC for oldest first
+        ORDER BY a.appointment_date DESC
     ";
     $stmt = $conn->prepare($query);
     $stmt->execute();
     $appointments = $stmt->fetchAll(PDO::FETCH_ASSOC);
 } catch (PDOException $e) {
-    // Display error within the main content area
     $message = "Error fetching appointments: " . $e->getMessage();
     $message_class = 'alert-danger';
-    $appointments = []; // Ensure appointments array is empty on error
-    // Consider logging the error instead of dying in production
-    // error_log("Query Failed: " . $e->getMessage());
+    $appointments = [];
 }
 ?>
 
 <!-- Page Title and Add Button -->
 <div class="d-flex justify-content-between align-items-center mb-4">
     <h2 class="m-0">Manage Appointments</h2>
-    <a href="add_appointment.php" class="btn btn-primary">
-        <i class="fas fa-plus me-2"></i> Add New Appointment
+    <a href="add_appointment.php" class="btn btn-primary d-none d-sm-inline-flex">
+        <!-- Hide on xs screens if floating button is used -->
+        <i class="fas fa-plus me-2"></i>Add New Appointment
     </a>
 </div>
 
 <!-- Display Message -->
 <?php if ($message): ?>
-    <div class="alert <?php echo $message_class ?? 'alert-info'; ?> alert-dismissible fade show" role="alert">
+    <div class="alert <?php echo htmlspecialchars($message_class); ?> alert-dismissible fade show" role="alert"
+        data-auto-dismiss="8000">
         <?php echo htmlspecialchars($message); ?>
-        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
     </div>
 <?php endif; ?>
 
 <!-- Appointments Table Card -->
 <div class="card shadow-sm">
     <div class="card-header">
-        <i class="fas fa-calendar-check me-2"></i> All Appointments
+        <i class="fas fa-calendar-alt me-2"></i>All Appointments
     </div>
-    <div class="card-body">
-        <div class="table-responsive">
-            <table class="table table-striped table-hover align-middle">
-                <thead class="table-light"> <!-- Use table-light for better contrast with dark sidebar -->
-                    <tr>
-                        <th class="text-center">ID</th>
-                        <th>Patient</th>
-                        <th>Doctor</th>
-                        <th>Service</th>
-                        <th>Date & Time</th>
-                        <th class="text-center">Status</th>
-                        <th class="text-center">Actions</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <?php if (empty($appointments)): ?>
+    <div class="card-body p-0">
+        <?php if (empty($appointments)): ?>
+            <p class="text-center text-muted p-4">No appointments found.</p>
+        <?php else: ?>
+            <div class="table-responsive">
+                <table class="table table-striped table-hover align-middle mb-0">
+                    <thead class="table-light">
                         <tr>
-                            <td colspan="7" class="text-center text-muted">No appointments found.</td>
+                            <th>Date & Time</th>
+                            <th>Patient</th>
+                            <th>Doctor</th>
+                            <th>Service</th>
+                            <th class="text-center">Status</th>
+                            <th class="text-end">Price</th>
+                            <th class="text-center">Actions</th>
                         </tr>
-                    <?php else: ?>
+                    </thead>
+                    <tbody>
                         <?php foreach ($appointments as $appointment): ?>
                             <tr>
-                                <td class="text-center"><?php echo htmlspecialchars($appointment['appointment_id']); ?></td>
+                                <td><?php echo htmlspecialchars(date('d M Y, h:i A', strtotime($appointment['appointment_date']))); ?>
+                                </td>
                                 <td><?php echo htmlspecialchars($appointment['patient_name']); ?></td>
                                 <td><?php echo htmlspecialchars($appointment['doctor_name']); ?></td>
                                 <td><?php echo htmlspecialchars($appointment['service_name']); ?></td>
-                                <td><?php echo htmlspecialchars(date('d M Y, h:i A', strtotime($appointment['appointment_date']))); ?>
-                                </td>
                                 <td class="text-center">
                                     <span class="badge rounded-pill <?php
                                     switch ($appointment['status']) {
@@ -126,55 +156,68 @@ try {
                                             break;
                                         default:
                                             echo 'bg-warning text-dark';
-                                            break; // Pending
                                     }
                                     ?>">
                                         <?php echo ucfirst(htmlspecialchars($appointment['status'])); ?>
                                     </span>
                                 </td>
+                                <td class="text-end">$<?php echo number_format($appointment['price'], 2); ?></td>
                                 <td class="text-center">
-                                    <!-- Use a dropdown for actions on smaller screens if needed, or keep inline -->
-                                    <a href="view_appointment.php?id=<?php echo htmlspecialchars($appointment['appointment_id']); ?>"
-                                        class="btn btn-sm btn-outline-info me-1" data-bs-toggle="tooltip" title="View">
-                                        <i class="fas fa-eye"></i>
-                                    </a>
-                                    <a href="edit_appointment.php?id=<?php echo htmlspecialchars($appointment['appointment_id']); ?>"
-                                        class="btn btn-sm btn-outline-warning me-1" data-bs-toggle="tooltip" title="Edit">
-                                        <i class="fas fa-edit"></i>
-                                    </a>
-                                    <form method="POST" action="<?php echo htmlspecialchars($_SERVER["PHP_SELF"]); ?>"
-                                        class="d-inline"
-                                        onsubmit="return confirm('Are you sure you want to delete this appointment?');">
-                                        <input type="hidden" name="delete_id"
-                                            value="<?php echo htmlspecialchars($appointment['appointment_id']); ?>">
-                                        <button type="submit" class="btn btn-sm btn-outline-danger" data-bs-toggle="tooltip"
-                                            title="Delete">
-                                            <i class="fas fa-trash-alt"></i>
-                                        </button>
-                                    </form>
+                                    <div class="action-buttons">
+                                        <a href="view_appointment.php?id=<?php echo $appointment['id']; ?>"
+                                            class="btn btn-info-soft btn-sm" data-bs-toggle="tooltip" title="View Details">
+                                            <i class="fas fa-eye"></i>
+                                        </a>
+                                        <a href="edit_appointment.php?id=<?php echo $appointment['id']; ?>"
+                                            class="btn btn-warning-soft btn-sm" data-bs-toggle="tooltip" title="Edit">
+                                            <i class="fas fa-edit"></i>
+                                        </a>
+                                        <form method="POST" class="d-inline confirm-delete-form">
+                                            <input type="hidden" name="delete_id" value="<?php echo $appointment['id']; ?>">
+                                            <button type="submit" class="btn btn-danger-soft btn-sm confirm-delete"
+                                                data-message="Delete appointment for <?php echo htmlspecialchars($appointment['patient_name']); ?>?"
+                                                data-bs-toggle="tooltip" title="Delete">
+                                                <i class="fas fa-trash"></i>
+                                            </button>
+                                        </form>
+                                    </div>
                                 </td>
                             </tr>
                         <?php endforeach; ?>
-                    <?php endif; ?>
-                </tbody>
-            </table>
-        </div>
-    </div> <!-- /card-body -->
-</div> <!-- /card -->
+                    </tbody>
+                </table>
+            </div>
+        <?php endif; ?>
+    </div>
+</div>
 
-<!-- Initialize Bootstrap Tooltips -->
 <script>
-    // Ensure tooltips are initialized after content is loaded
+    // Initialize Bootstrap tooltips
     document.addEventListener('DOMContentLoaded', function () {
-        var tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'))
+        var tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
         var tooltipList = tooltipTriggerList.map(function (tooltipTriggerEl) {
-            return new bootstrap.Tooltip(tooltipTriggerEl)
-        })
+            return new bootstrap.Tooltip(tooltipTriggerEl);
+        });
+    });
+
+    // Custom confirm for delete forms
+    const confirmDeleteForms = document.querySelectorAll('.confirm-delete-form');
+    confirmDeleteForms.forEach(form => {
+        form.addEventListener('submit', function (event) {
+            const button = form.querySelector('.confirm-delete');
+            const message = button.dataset.message || 'Are you sure you want to delete this item?';
+            if (!confirm(message)) {
+                event.preventDefault();
+            }
+        });
     });
 </script>
 
 <style>
     /* --- Ultra-Premium Table & Card Layout Enhancements --- */
+    /* Consider moving these to a global CSS file if used on multiple pages, 
+       or a page-specific <style> block in the <head> if substantial.
+       For this exercise, keeping them here as per original structure. */
     .card {
         border-radius: 1.25rem;
         box-shadow: 0 8px 32px 0 rgba(13, 110, 253, 0.09), 0 1.5px 6px 0 rgba(0, 0, 0, 0.04);
@@ -370,7 +413,10 @@ try {
 
         /* Floating Add Button for mobile */
         .floating-add-btn {
-            display: flex !important;
+            /* display: none; */
+            /* Controlled by d-sm-none on the button itself now */
+            display: inline-flex !important;
+            /* Ensure it shows on small screens */
         }
     }
 
@@ -425,6 +471,11 @@ try {
         }
     }
 </style>
+
+<!-- Floating Add Button for mobile -->
+<a href="add_appointment.php" class="btn floating-add-btn d-sm-none" title="Add New Appointment">
+    <i class="fas fa-plus"></i>
+</a>
 
 <?php
 include '../includes/footer.php'; // Includes closing tags and global scripts

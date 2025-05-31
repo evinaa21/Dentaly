@@ -278,16 +278,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['upload_graph'])) {
                         <input type="text" class="form-control" id="description" name="description" required>
                     </div>
                     <div class="mb-3">
+                        <!-- Label for the file input field -->
                         <label for="image" class="form-label">Image</label>
+                        <!-- File input control for uploading images -->
+                        <!-- class="form-control" applies Bootstrap styling -->
+                        <!-- id="image" links this input to the label above -->
+                        <!-- name="image" is how PHP identifies this file in $_FILES['image'] -->
+                        <!-- accept="image/*" restricts uploads to image files only -->
+                        <!-- required makes this field mandatory before form submission -->
                         <input type="file" class="form-control" id="image" name="image" accept="image/*" required>
                     </div>
+                    <!-- Submit button that triggers form submission -->
+                    <!-- btn btn-primary gives it Bootstrap's blue button styling -->
+                    <!-- name="upload_graph" helps PHP identify which form action to perform -->
                     <button type="submit" class="btn btn-primary" name="upload_graph">Upload</button>
                 </form>
             </div>
         </div>
     </div>
+    <!-- Loads custom JavaScript from the assets folder -->
     <script src="../assets/js/script.js"></script>
+    <!-- Loads Bootstrap's JavaScript bundle from CDN (Content Delivery Network) -->
+    <!-- This enables interactive features like dropdowns, modals, etc. -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 
-</html>
+</html> <!-- Closing HTML tag - end of the document -->

@@ -1,103 +1,105 @@
 <?php
-// Define page title *before* including header
-$page_title = 'My Profile';
-include '../includes/header.php'; // Include the shared header with the sidebar
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
+
+include '../config/db.php'; // Include database connection
 
 // Check if the user is actually a doctor
-if ($_SESSION['role'] !== 'doctor') {
+if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'doctor') {
+    // Handle access denied without including header yet
+    $access_denied = true;
+} else {
+    $access_denied = false;
+    $doctor_id = $_SESSION['user_id'];
+    $error_message = '';
+    $success_message = '';
+    $doctor_info = null;
+
+    // --- Handle Password Change FIRST (before any output) ---
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['change_password'])) {
+        $current_password = $_POST['current_password'] ?? '';
+        $new_password = $_POST['new_password'] ?? '';
+        $confirm_password = $_POST['confirm_password'] ?? '';
+
+        // Validation
+        if (empty($current_password) || empty($new_password) || empty($confirm_password)) {
+            $_SESSION['flash_message'] = ['type' => 'danger', 'text' => 'All password fields are required.'];
+            header("Location: my_profile.php");
+            exit;
+        } elseif ($new_password !== $confirm_password) {
+            $_SESSION['flash_message'] = ['type' => 'danger', 'text' => 'New password and confirmation password do not match.'];
+            header("Location: my_profile.php");
+            exit;
+        } elseif (strlen($new_password) < 6) {
+            $_SESSION['flash_message'] = ['type' => 'danger', 'text' => 'New password must be at least 6 characters long.'];
+            header("Location: my_profile.php");
+            exit;
+        } else {
+            try {
+                // Verify current password
+                $pass_stmt = $conn->prepare("SELECT password FROM users WHERE id = :id");
+                $pass_stmt->bindParam(':id', $doctor_id, PDO::PARAM_INT);
+                $pass_stmt->execute();
+                $user = $pass_stmt->fetch(PDO::FETCH_ASSOC);
+
+                if ($user && password_verify($current_password, $user['password'])) {
+                    // Hash new password
+                    $new_password_hash = password_hash($new_password, PASSWORD_DEFAULT);
+
+                    // Update password in database
+                    $update_pass_stmt = $conn->prepare("UPDATE users SET password = :new_password WHERE id = :id");
+                    $update_pass_stmt->bindParam(':new_password', $new_password_hash, PDO::PARAM_STR);
+                    $update_pass_stmt->bindParam(':id', $doctor_id, PDO::PARAM_INT);
+                    $update_pass_stmt->execute();
+
+                    $_SESSION['flash_message'] = ['type' => 'success', 'text' => 'Password changed successfully!'];
+                    header("Location: my_profile.php");
+                    exit;
+                } else {
+                    $_SESSION['flash_message'] = ['type' => 'danger', 'text' => 'Incorrect current password.'];
+                    header("Location: my_profile.php");
+                    exit;
+                }
+            } catch (PDOException $e) {
+                $_SESSION['flash_message'] = ['type' => 'danger', 'text' => 'Database error changing password.'];
+                header("Location: my_profile.php");
+                exit;
+            }
+        }
+    }
+
+    // --- Fetch Current Doctor Information ---
+    try {
+        $stmt = $conn->prepare("SELECT name, email FROM users WHERE id = :id AND role = 'doctor'");
+        $stmt->bindParam(':id', $doctor_id, PDO::PARAM_INT);
+        $stmt->execute();
+        $doctor_info = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$doctor_info) {
+            throw new Exception("Doctor profile not found.");
+        }
+    } catch (Exception $e) {
+        $error_message = "Error fetching profile data: " . $e->getMessage();
+    }
+
+    // --- Display Flash Message ---
+    if (isset($_SESSION['flash_message'])) {
+        $flash_message = $_SESSION['flash_message'];
+        unset($_SESSION['flash_message']);
+    }
+}
+
+// NOW include header after all processing is complete
+$page_title = 'My Profile';
+include '../includes/header.php';
+
+// Handle access denied AFTER header is included
+if ($access_denied) {
     echo '<div class="alert alert-danger m-3">Access Denied. You do not have permission to view this page.</div>';
     include '../includes/footer.php';
     exit;
 }
-
-$doctor_id = $_SESSION['user_id'];
-$error_message = '';
-$success_message = '';
-$doctor_info = null;
-
-// --- Fetch Current Doctor Information ---
-try {
-    // Select only columns that exist in the 'users' table
-    $stmt = $conn->prepare("SELECT name, email FROM users WHERE id = :id AND role = 'doctor'");
-    $stmt->bindParam(':id', $doctor_id, PDO::PARAM_INT);
-    $stmt->execute();
-    $doctor_info = $stmt->fetch(PDO::FETCH_ASSOC);
-
-    if (!$doctor_info) {
-        throw new Exception("Doctor profile not found.");
-    }
-} catch (Exception $e) {
-    $error_message = "Error fetching profile data: " . $e->getMessage();
-}
-
-/* --- REMOVED: Handle Profile Information Update ---
-   The 'users' table in the provided schema does not have contact_number or specialization.
-   This logic needs to be adapted if those fields are added or moved to another table.
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_profile'])) {
-    // ... code to update non-existent columns ...
-}
-*/
-
-// --- Handle Password Change ---
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['change_password'])) {
-    $current_password = $_POST['current_password'] ?? '';
-    $new_password = $_POST['new_password'] ?? '';
-    $confirm_password = $_POST['confirm_password'] ?? '';
-
-    // Validation
-    if (empty($current_password) || empty($new_password) || empty($confirm_password)) {
-        $error_message = "All password fields are required.";
-    } elseif ($new_password !== $confirm_password) {
-        $error_message = "New password and confirmation password do not match.";
-    } elseif (strlen($new_password) < 6) { // Basic length check
-        $error_message = "New password must be at least 6 characters long.";
-    } else {
-        try {
-            // Verify current password
-            $pass_stmt = $conn->prepare("SELECT password FROM users WHERE id = :id");
-            $pass_stmt->bindParam(':id', $doctor_id, PDO::PARAM_INT);
-            $pass_stmt->execute();
-            $user = $pass_stmt->fetch(PDO::FETCH_ASSOC);
-
-            if ($user && password_verify($current_password, $user['password'])) {
-                // Hash new password
-                $new_password_hash = password_hash($new_password, PASSWORD_DEFAULT);
-
-                // Update password in database
-                $update_pass_stmt = $conn->prepare("UPDATE users SET password = :new_password WHERE id = :id");
-                $update_pass_stmt->bindParam(':new_password', $new_password_hash, PDO::PARAM_STR);
-                $update_pass_stmt->bindParam(':id', $doctor_id, PDO::PARAM_INT);
-                $update_pass_stmt->execute();
-
-                $_SESSION['flash_message'] = ['type' => 'success', 'text' => 'Password changed successfully!'];
-                header("Location: my_profile.php");
-                exit;
-
-            } else {
-                $error_message = "Incorrect current password.";
-            }
-        } catch (PDOException $e) {
-            $_SESSION['flash_message'] = ['type' => 'danger', 'text' => 'Database error changing password.'];
-            // error_log("Password Change Error: " . $e->getMessage());
-            header("Location: my_profile.php"); // Redirect even on error to show flash
-            exit;
-        }
-    }
-    // If validation fails, set flash message and redirect
-    if ($error_message) {
-        $_SESSION['flash_message'] = ['type' => 'danger', 'text' => $error_message];
-        header("Location: my_profile.php");
-        exit;
-    }
-}
-
-
-// --- Display Flash Message ---
-if (isset($_SESSION['flash_message'])) {
-    $flash_message = $_SESSION['flash_message'];
-    unset($_SESSION['flash_message']); // Clear message after displaying
-}
-
 ?>
 
 <!-- Page Title -->
@@ -113,10 +115,9 @@ if (isset($_SESSION['flash_message'])) {
         <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
     </div>
 <?php endif; ?>
-<?php if ($error_message && empty($flash_message)): // Show general error only if no flash message ?>
+<?php if ($error_message && empty($flash_message)): ?>
     <div class="alert alert-danger"><?php echo $error_message; ?></div>
 <?php endif; ?>
-
 
 <?php if ($doctor_info): ?>
     <div class="row">
@@ -127,10 +128,8 @@ if (isset($_SESSION['flash_message'])) {
                     <h5 class="mb-0"><i class="fas fa-id-card me-2"></i> Profile Information</h5>
                 </div>
                 <div class="card-body">
-                    <!-- Removed form as there's nothing editable here based on current schema -->
                     <div class="mb-3">
                         <label class="form-label">Name</label>
-                        <!-- Display the 'name' field -->
                         <input type="text" class="form-control"
                             value="<?php echo htmlspecialchars($doctor_info['name']); ?>" readonly disabled>
                         <small class="text-muted">Name cannot be changed here.</small>
@@ -141,10 +140,6 @@ if (isset($_SESSION['flash_message'])) {
                             value="<?php echo htmlspecialchars($doctor_info['email']); ?>" readonly disabled>
                         <small class="text-muted">Email cannot be changed here.</small>
                     </div>
-                    <!-- REMOVED Contact Number Field -->
-                    <!-- REMOVED Specialization Field -->
-                    <!-- REMOVED Update Button -->
-                    <!-- </form> -->
                     <p class="text-muted mt-3"><small>To change Name or Email, please contact an administrator.</small></p>
                     <p class="text-muted"><small>Contact number and specialization are not stored in the main user
                             profile.</small></p>
@@ -152,7 +147,7 @@ if (isset($_SESSION['flash_message'])) {
             </div>
         </div>
 
-        <!-- Change Password Card (This part is OK as 'password' exists) -->
+        <!-- Change Password Card -->
         <div class="col-lg-6 mb-4">
             <div class="card shadow-sm h-100">
                 <div class="card-header bg-light">
@@ -194,12 +189,11 @@ if (isset($_SESSION['flash_message'])) {
         </div>
     </div>
 <?php else: ?>
-    <?php if (empty($error_message)): // Show default error if no specific one was set ?>
+    <?php if (empty($error_message)): ?>
         <div class="alert alert-danger">Could not load doctor profile information.</div>
     <?php endif; ?>
 <?php endif; ?>
 
-
 <?php
-include '../includes/footer.php'; // Include the shared footer
+include '../includes/footer.php';
 ?>

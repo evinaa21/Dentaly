@@ -13,24 +13,107 @@ $services = $conn->query("SELECT id, service_name, price FROM services ORDER BY 
 
 $success = false;
 $error = '';
+$submitted_data = []; // To repopulate form on error
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $patient_id = $_POST['patient_id'] ?? '';
-    $doctor_id = $_POST['doctor_id'] ?? '';
-    $service_id = $_POST['service_id'] ?? '';
-    $appointment_date = $_POST['appointment_date'] ?? '';
-    $appointment_time = $_POST['appointment_time'] ?? '';
+    $submitted_data = $_POST; // Store submitted data
+
+    $patient_id = filter_input(INPUT_POST, 'patient_id', FILTER_VALIDATE_INT);
+    $doctor_id = filter_input(INPUT_POST, 'doctor_id', FILTER_VALIDATE_INT);
+    $service_id = filter_input(INPUT_POST, 'service_id', FILTER_VALIDATE_INT);
+    $appointment_date_str = trim($_POST['appointment_date'] ?? '');
+    $appointment_time_str = trim($_POST['appointment_time'] ?? '');
     $notes = trim($_POST['notes'] ?? '');
 
-    if (!$patient_id || !$doctor_id || !$service_id || !$appointment_date || !$appointment_time) {
-        $error = "All fields except notes are required.";
+    // Basic date validation
+    $date_valid = false;
+    if (!empty($appointment_date_str)) {
+        $date_obj = DateTime::createFromFormat('Y-m-d', $appointment_date_str);
+        $date_valid = $date_obj && $date_obj->format('Y-m-d') === $appointment_date_str;
+    }
+
+    if (!$patient_id || !$doctor_id || !$service_id || !$date_valid || empty($appointment_time_str)) {
+        $error = "All fields marked with * are required. Please ensure date and time are valid.";
     } else {
-        $datetime = date('Y-m-d H:i:00', strtotime("$appointment_date $appointment_time"));
+        $datetime_str = $appointment_date_str . ' ' . $appointment_time_str;
+        // Attempt to create a DateTime object to validate combined date and time
         try {
-            $stmt = $conn->prepare("INSERT INTO appointments (patient_id, doctor_id, service_id, appointment_date, notes) VALUES (?, ?, ?, ?, ?)");
-            $stmt->execute([$patient_id, $doctor_id, $service_id, $datetime, $notes]);
-            $success = true;
-        } catch (PDOException $e) {
-            $error = "Failed to book appointment. Please try again.";
+            $appointment_datetime_obj = new DateTime($datetime_str);
+            $datetime_sql_format = $appointment_datetime_obj->format('Y-m-d H:i:s');
+            $current_datetime_obj = new DateTime();
+
+            // Validate appointment isn't in the past (allow a small buffer like 5 minutes for processing)
+            $current_datetime_obj->modify('-5 minutes'); // Fix: assign to variable first
+
+            if ($appointment_datetime_obj < $current_datetime_obj) {
+                $error = "Cannot book appointments in the past. Please select a future date and time.";
+            } else {
+                $appointment_hour = (int) $appointment_datetime_obj->format('H');
+                // Validate appointment is during business hours (e.g., 8 AM to 6 PM, so 8 to 17 inclusive for hour)
+                if ($appointment_hour < 8 || $appointment_hour >= 18) { // 6 PM is 18:00, so appointments should be before 18
+                    $error = "Appointments must be scheduled between 8:00 AM and 5:59 PM.";
+                } else {
+                    try {
+                        // Check if doctor is already booked within 1.5 hours of this time
+                        // Calculate time range: 90 minutes before and after the selected time
+                        $appointment_start = clone $appointment_datetime_obj;
+                        $appointment_end = clone $appointment_datetime_obj;
+                        $appointment_start->modify('-90 minutes');
+                        $appointment_end->modify('+90 minutes');
+
+                        // Store formatted strings in variables for bindParam
+                        $start_time_formatted = $appointment_start->format('Y-m-d H:i:s');
+                        $end_time_formatted = $appointment_end->format('Y-m-d H:i:s');
+
+                        $check_stmt = $conn->prepare("SELECT COUNT(*) FROM appointments 
+                                                      WHERE doctor_id = :doctor_id 
+                                                      AND appointment_date BETWEEN :start_time AND :end_time
+                                                      AND status != 'canceled'");
+                        $check_stmt->bindParam(':doctor_id', $doctor_id, PDO::PARAM_INT);
+                        $check_stmt->bindParam(':start_time', $start_time_formatted, PDO::PARAM_STR);
+                        $check_stmt->bindParam(':end_time', $end_time_formatted, PDO::PARAM_STR);
+                        $check_stmt->execute();
+                        $exists = $check_stmt->fetchColumn();
+
+                        if ($exists > 0) {
+                            $error = "This doctor already has an appointment within 1.5 hours of the selected time. Each appointment requires at least 90 minutes. Please choose a different time or doctor.";
+                        } else {
+                            // Check if patient already has an appointment within 1.5 hours of this time
+                            $check_patient = $conn->prepare("SELECT COUNT(*) FROM appointments 
+                                                             WHERE patient_id = :patient_id 
+                                                             AND appointment_date BETWEEN :start_time AND :end_time
+                                                             AND status != 'canceled'");
+                            $check_patient->bindParam(':patient_id', $patient_id, PDO::PARAM_INT);
+                            $check_patient->bindParam(':start_time', $start_time_formatted, PDO::PARAM_STR);
+                            $check_patient->bindParam(':end_time', $end_time_formatted, PDO::PARAM_STR);
+                            $check_patient->execute();
+                            $patient_exists = $check_patient->fetchColumn();
+
+                            if ($patient_exists > 0) {
+                                $error = "This patient already has another appointment within 1.5 hours of the selected time. Please choose a different time.";
+                            } else {
+                                $stmt = $conn->prepare("INSERT INTO appointments (patient_id, doctor_id, service_id, appointment_date, notes) VALUES (:patient_id, :doctor_id, :service_id, :appointment_date, :notes)");
+                                $stmt->bindParam(':patient_id', $patient_id, PDO::PARAM_INT);
+                                $stmt->bindParam(':doctor_id', $doctor_id, PDO::PARAM_INT);
+                                $stmt->bindParam(':service_id', $service_id, PDO::PARAM_INT);
+                                $stmt->bindParam(':appointment_date', $datetime_sql_format, PDO::PARAM_STR);
+                                $stmt->bindParam(':notes', $notes, PDO::PARAM_STR);
+                                $stmt->execute();
+                                $success = true;
+                                $submitted_data = []; // Clear submitted data on success
+                                // Add notification for the doctor
+                                // add_notification($conn, $doctor_id, "New appointment booked with you on " . $appointment_datetime_obj->format('M d, Y H:i'), "view_appointment.php?id=" . $conn->lastInsertId());
+                            }
+                        }
+                    } catch (PDOException $e) {
+                        $error = "Failed to book appointment: " . $e->getMessage();
+                        // error_log("Add Appointment DB Error: " . $e->getMessage());
+                    }
+                }
+            }
+        } catch (Exception $e) {
+            $error = "Invalid date or time format provided.";
+            // error_log("Add Appointment DateTime Parse Error: " . $e->getMessage());
         }
     }
 }
@@ -58,16 +141,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             <div class="alert alert-danger text-center fs-5"><i
                                     class="fas fa-exclamation-triangle me-2"></i><?= htmlspecialchars($error) ?></div>
                         <?php endif; ?>
-                        <form method="POST" id="addAppointmentForm" autocomplete="off">
+                        <form method="POST" id="addAppointmentForm" autocomplete="off"
+                            action="<?php echo htmlspecialchars($_SERVER["PHP_SELF"]); ?>">
                             <div class="row g-4 mb-4">
                                 <div class="col-md-6">
                                     <label for="patient_id" class="form-label fw-semibold">Patient <span
                                             class="text-danger">*</span></label>
                                     <select class="form-select select2-ajax" id="patient_id" name="patient_id" required
                                         style="width:100%;">
-                                        <option value="">Search Patient...</option>
+                                        <?php if (!empty($submitted_data['patient_id']) && !empty($submitted_data['patient_id_text'])): ?>
+                                            <option value="<?php echo htmlspecialchars($submitted_data['patient_id']); ?>"
+                                                selected><?php echo htmlspecialchars($submitted_data['patient_id_text']); ?>
+                                            </option>
+                                        <?php else: ?>
+                                            <option value="">Search Patient...</option>
+                                        <?php endif; ?>
                                         <option value="new">+ Add New Patient</option>
                                     </select>
+                                    <!-- Hidden input to store patient text for repopulation -->
+                                    <input type="hidden" name="patient_id_text" id="patient_id_text"
+                                        value="<?php echo htmlspecialchars($submitted_data['patient_id_text'] ?? ''); ?>">
                                     <div class="form-text">Type to search patients by name or contact.</div>
                                 </div>
                                 <div class="col-md-6">
@@ -76,7 +169,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                     <select class="form-select select2" id="doctor_id" name="doctor_id" required>
                                         <option value="">Select Doctor...</option>
                                         <?php foreach ($doctors as $d): ?>
-                                            <option value="<?= $d['id'] ?>"><?= htmlspecialchars($d['name']) ?></option>
+                                            <option value="<?= $d['id'] ?>" <?php echo (isset($submitted_data['doctor_id']) && $submitted_data['doctor_id'] == $d['id']) ? 'selected' : ''; ?>>
+                                                <?= htmlspecialchars($d['name']) ?>
+                                            </option>
                                         <?php endforeach; ?>
                                     </select>
                                 </div>
@@ -88,7 +183,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                     <select class="form-select select2" id="service_id" name="service_id" required>
                                         <option value="">Select Service...</option>
                                         <?php foreach ($services as $s): ?>
-                                            <option value="<?= $s['id'] ?>">
+                                            <option value="<?= $s['id'] ?>" <?php echo (isset($submitted_data['service_id']) && $submitted_data['service_id'] == $s['id']) ? 'selected' : ''; ?>>
                                                 <?= htmlspecialchars($s['service_name']) ?>
                                                 (<?= number_format($s['price'], 2) ?>$)
                                             </option>
@@ -99,19 +194,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                     <label for="appointment_date" class="form-label fw-semibold">Date <span
                                             class="text-danger">*</span></label>
                                     <input type="date" class="form-control" id="appointment_date" name="appointment_date"
-                                        min="<?= date('Y-m-d') ?>" required>
+                                        min="<?= date('Y-m-d') ?>" required
+                                        value="<?php echo htmlspecialchars($submitted_data['appointment_date'] ?? ''); ?>">
                                 </div>
                                 <div class="col-md-3">
                                     <label for="appointment_time" class="form-label fw-semibold">Time <span
                                             class="text-danger">*</span></label>
                                     <input type="time" class="form-control" id="appointment_time" name="appointment_time"
-                                        required>
+                                        required
+                                        value="<?php echo htmlspecialchars($submitted_data['appointment_time'] ?? ''); ?>"
+                                        step="900"> <!-- step 15 mins -->
+                                    <small class="form-text text-muted">Clinic hours: 8 AM - 6 PM.</small>
                                 </div>
                             </div>
                             <div class="mb-4">
                                 <label for="notes" class="form-label fw-semibold">Notes</label>
                                 <textarea class="form-control" id="notes" name="notes" rows="2"
-                                    placeholder="Optional notes..."></textarea>
+                                    placeholder="Optional notes..."><?php echo htmlspecialchars($submitted_data['notes'] ?? ''); ?></textarea>
                             </div>
                             <div class="d-grid gap-2">
                                 <button type="submit" class="btn btn-gradient-success btn-lg shadow-lg fs-5">
@@ -168,6 +267,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     </div>
 </div>
 
+<!-- Load jQuery before using it -->
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"
+    integrity="sha256-/JqT3SQfawRcv/BIHPThkBvs0OEvtFFmqPF/lYI/Cxo=" crossorigin="anonymous"></script>
+<link href="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css" rel="stylesheet" />
+<link href="https://cdn.jsdelivr.net/npm/select2-bootstrap-5-theme@1.3.0/dist/select2-bootstrap-5-theme.min.css"
+    rel="stylesheet" />
+<script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
+
 <!-- Custom JS for Select2, AJAX Patient Search, Modal -->
 <script>
     $(document).ready(function () {
@@ -202,7 +309,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         // Show modal when "Add New Patient" is selected
         $('#patient_id').on('select2:select', function (e) {
-            if (e.params.data.id === 'new') {
+            var data = e.params.data;
+            // Store selected patient text for repopulation on error
+            $('#patient_id_text').val(data.text);
+            if (data.id === 'new') {
                 $('#newPatientModal').modal('show');
                 $('#patient_id').val(null).trigger('change');
             }
@@ -287,3 +397,5 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         font-size: 1.08rem !important;
     }
 </style>
+
+<?php include '../includes/footer.php'; ?>

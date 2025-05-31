@@ -90,7 +90,7 @@ function getStatusBadgeClass($status)
     <div class="card shadow-sm">
         <div class="card-header bg-light d-flex justify-content-between align-items-center">
             <h5 class="mb-0"><i class="fas fa-info-circle me-2"></i> Details for Appointment
-                #<?php echo htmlspecialchars($appointment['appointment_id']); ?></h5>
+            </h5>
             <span class="badge <?php echo getStatusBadgeClass($appointment['status']); ?> fs-6">
                 <?php echo ucfirst(htmlspecialchars($appointment['status'])); ?>
             </span>

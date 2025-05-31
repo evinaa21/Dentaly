@@ -16,19 +16,20 @@ if ($_SESSION['role'] !== 'admin') {
 
 // Fetch dashboard data
 try {
-    // Core Metrics
-    $total_doctors = $conn->query("SELECT COUNT(*) FROM users WHERE role = 'doctor'")->fetchColumn();
-    $total_receptionists = $conn->query("SELECT COUNT(*) FROM users WHERE role = 'receptionist'")->fetchColumn();
-    $total_patients = $conn->query("SELECT COUNT(*) FROM patients")->fetchColumn();
-    $total_appointments = $conn->query("SELECT COUNT(*) FROM appointments")->fetchColumn();
-
-    // Chart Data
-    $pending_appointments_count = $conn->query("SELECT COUNT(*) FROM appointments WHERE status = 'pending'")->fetchColumn();
-    $completed_appointments_count = $conn->query("SELECT COUNT(*) FROM appointments WHERE status = 'completed'")->fetchColumn();
-    $canceled_appointments_count = $conn->query("SELECT COUNT(*) FROM appointments WHERE status = 'canceled'")->fetchColumn();
-
-    // New Widgets Data
-    $appointments_today = $conn->query("SELECT COUNT(*) FROM appointments WHERE DATE(appointment_date) = CURDATE()")->fetchColumn();
+    // Combined query for better performance
+    $dashboard_query = "
+        SELECT 
+            (SELECT COUNT(*) FROM users WHERE role = 'doctor') as total_doctors,
+            (SELECT COUNT(*) FROM users WHERE role = 'receptionist') as total_receptionists,
+            (SELECT COUNT(*) FROM patients) as total_patients,
+            (SELECT COUNT(*) FROM appointments) as total_appointments,
+            (SELECT COUNT(*) FROM appointments WHERE status = 'pending') as pending_count,
+            (SELECT COUNT(*) FROM appointments WHERE status = 'completed') as completed_count,
+            (SELECT COUNT(*) FROM appointments WHERE status = 'canceled') as canceled_count,
+            (SELECT COUNT(*) FROM appointments WHERE DATE(appointment_date) = CURDATE()) as appointments_today
+    ";
+    $result = $conn->query($dashboard_query)->fetch(PDO::FETCH_ASSOC);
+    extract($result); // Extract variables from the result array
 
     // Upcoming Appointments (Limit to 5 for example)
     $upcoming_query = "
@@ -64,226 +65,17 @@ try {
 ?>
 
 <!-- Page-Specific CSS (Load after global CSS from header) -->
-<link href="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.14/main.min.css" rel="stylesheet">
-<link rel="stylesheet" href="https://unpkg.com/tippy.js@6/dist/tippy.css" /> <!-- Tippy CSS -->
 <style>
-    /* Dashboard Specific Styles */
-    .metric-card {
-        transition: transform 0.2s ease-in-out, box-shadow 0.2s ease-in-out;
-        border: none;
-        /* Remove default border if using shadow */
-    }
-
-    .metric-card:hover {
-        transform: translateY(-5px);
-        box-shadow: 0 8px 16px rgba(0, 0, 0, 0.1);
-    }
-
-    .metric-card .card-header {
-        font-weight: 600;
-        border-bottom: none;
-        /* Cleaner look */
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        gap: 0.5rem;
-    }
-
-    .metric-card .card-body h3 {
-        color: var(--primary-color);
-        font-weight: 700;
-        margin-bottom: 0;
-        /* Remove default margin */
-        font-size: 2.25rem;
-        /* Larger number */
-    }
-
-    #appointmentCalendar {
-        height: 650px;
-        /* Fixed height can be better sometimes */
-    }
-
-    .fc-event {
-        cursor: pointer;
-        border: none !important;
-        padding: 4px 6px;
-        font-size: 0.85em;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-    }
-
-    .fc-event:hover {
-        opacity: 0.9;
-    }
-
-    /* Tippy Tooltip Style */
-    .tippy-box[data-theme~='light-border'] {
-        border: 1px solid var(--border-color);
-        font-size: 0.9rem;
-    }
-
-    .tippy-box[data-theme~='light-border'] .tippy-content {
-        padding: 0.5rem 0.75rem;
-    }
-
-    /* Chart Container */
+    /* Only keep unique dashboard-specific styles that aren't in main CSS */
     #chartContainer {
         position: relative;
         height: 300px;
-        /* Adjust as needed */
         width: 100%;
     }
 
     #appointmentChart {
         max-width: 100%;
         max-height: 100%;
-    }
-
-    /* Premium Dashboard Enhancements */
-    .metric-card {
-        border-radius: 1.25rem;
-        box-shadow: 0 4px 24px 0 rgba(13, 110, 253, 0.07), 0 1.5px 6px 0 rgba(0, 0, 0, 0.04);
-        background: linear-gradient(120deg, #fff 80%, #f0f4ff 100%);
-        border: none;
-        overflow: hidden;
-        position: relative;
-    }
-
-    .metric-card::after {
-        content: '';
-        position: absolute;
-        right: -40px;
-        top: -40px;
-        width: 80px;
-        height: 80px;
-        background: rgba(13, 110, 253, 0.04);
-        border-radius: 50%;
-        z-index: 0;
-    }
-
-    .metric-card .card-body {
-        position: relative;
-        z-index: 1;
-    }
-
-    .icon-circle {
-        width: 48px;
-        height: 48px;
-        border-radius: 50%;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 1.5rem;
-        box-shadow: 0 2px 8px 0 rgba(13, 110, 253, 0.10);
-        border: 2px solid #fff;
-        transition: transform 0.18s, box-shadow 0.18s;
-    }
-
-    .metric-card:hover .icon-circle {
-        transform: scale(1.12) rotate(-8deg);
-        box-shadow: 0 6px 18px 0 rgba(13, 110, 253, 0.18);
-    }
-
-    .metric-label {
-        font-size: 1rem;
-        font-weight: 500;
-        letter-spacing: 0.2px;
-        margin-bottom: 0.15rem;
-    }
-
-    .metric-value {
-        font-size: 2.1rem;
-        font-weight: 800;
-        color: #0d6efd;
-        letter-spacing: 1px;
-        text-shadow: 0 1px 0 #f0f4ff;
-    }
-
-    .bg-primary-soft {
-        background: rgba(13, 110, 253, 0.08) !important;
-    }
-
-    .bg-success-soft {
-        background: rgba(25, 135, 84, 0.08) !important;
-    }
-
-    .icon-circle.bg-warning {
-        color: #856404 !important;
-    }
-
-    .upcoming-appt-item {
-        border-left: 4px solid #0d6efd;
-        border-radius: 0.7rem;
-        margin: 0.5rem 0;
-        box-shadow: 0 2px 8px 0 rgba(13, 110, 253, 0.04);
-        transition: box-shadow 0.18s, transform 0.18s;
-        position: relative;
-        overflow: hidden;
-    }
-
-    .upcoming-appt-item:hover {
-        box-shadow: 0 6px 18px 0 rgba(13, 110, 253, 0.11);
-        transform: scale(1.02) translateX(2px);
-        background: #f0f4ff;
-    }
-
-    .upcoming-appt-item .stretched-link {
-        z-index: 2;
-    }
-
-    .card-header {
-        background: linear-gradient(90deg, #fff 80%, #f0f4ff 100%);
-        border-radius: 1rem 1rem 0 0;
-        font-weight: 600;
-        font-size: 1.08rem;
-        letter-spacing: 0.2px;
-        border-bottom: 1px solid #e5e5e5;
-    }
-
-    .card {
-        border-radius: 1.25rem;
-        overflow: hidden;
-    }
-
-    .btn {
-        border-radius: 0.7rem;
-        font-weight: 600;
-        letter-spacing: 0.2px;
-        box-shadow: 0 2px 8px 0 rgba(13, 110, 253, 0.04);
-        transition: box-shadow 0.18s, transform 0.18s;
-    }
-
-    .btn:hover,
-    .btn:focus {
-        box-shadow: 0 4px 16px 0 rgba(13, 110, 253, 0.10);
-        transform: scale(1.03);
-    }
-
-    /* Responsive Adjustments */
-    @media (max-width: 767.98px) {
-        #appointmentCalendar {
-            height: 500px;
-            /* Shorter height on mobile */
-        }
-
-        .metric-card .card-body h3 {
-            font-size: 1.75rem;
-            /* Slightly smaller number on mobile */
-        }
-
-        .metric-card {
-            border-radius: 1rem;
-        }
-
-        .card {
-            border-radius: 1rem;
-        }
-
-        .card-header {
-            border-radius: 1rem 1rem 0 0;
-        }
     }
 </style>
 
@@ -401,6 +193,7 @@ try {
         <div class="card shadow-sm h-100">
             <div class="card-header d-flex justify-content-between align-items-center">
                 <span><i class="fas fa-clock me-2"></i>Upcoming Appointments</span>
+
                 <a href="manage_appointments.php" class="btn btn-sm btn-outline-primary">View All</a>
             </div>
             <div class="card-body p-0">
@@ -466,13 +259,52 @@ try {
     </div>
 </div>
 
+<!-- Recent Activity Widget -->
+<div class="col-12 mb-4">
+    <div class="card shadow-sm">
+        <div class="card-header">
+            <i class="fas fa-history me-2"></i> Recent Activity
+        </div>
+        <div class="card-body">
+            <div class="timeline">
+                <?php
+                $recent_activity = $conn->query("
+                    SELECT 
+                        'appointment' as type,
+                        CONCAT(p.first_name, ' ', p.last_name) as patient_name,
+                        a.created_at,
+                        a.appointment_date,
+                        u.name as doctor_name
+                    FROM appointments a
+                    JOIN patients p ON a.patient_id = p.id
+                    JOIN users u ON a.doctor_id = u.id
+                    ORDER BY a.created_at DESC
+                    LIMIT 5
+                ")->fetchAll(PDO::FETCH_ASSOC);
+
+                foreach ($recent_activity as $activity): ?>
+                    <div class="timeline-item">
+                        <div class="timeline-marker bg-primary"></div>
+                        <div class="timeline-content">
+                            <h6 class="mb-1">New appointment booked</h6>
+                            <p class="mb-1"><?php echo htmlspecialchars($activity['patient_name']); ?> with Dr.
+                                <?php echo htmlspecialchars($activity['doctor_name']); ?>
+                            </p>
+                            <small
+                                class="text-muted"><?php echo date('M j, Y g:i A', strtotime($activity['created_at'])); ?></small>
+                        </div>
+                    </div>
+                <?php endforeach; ?>
+            </div>
+        </div>
+    </div>
+</div>
+
 <!-- Page-Specific JS (Load after global JS from footer) -->
-<!-- REMOVE FullCalendar JS -->
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
-<!-- REMOVE Tippy.js unless used elsewhere -->
 <script>
     document.addEventListener('DOMContentLoaded', function () {
-        // Appointment Status Chart Initialization (Keep this)
+        // Appointment Status Chart Initialization
         const ctxPie = document.getElementById('appointmentChart');
         if (ctxPie) {
             new Chart(ctxPie.getContext('2d'), {
@@ -482,9 +314,9 @@ try {
                     datasets: [{
                         label: 'Appointments',
                         data: [
-                            <?php echo $pending_appointments_count; ?>,
-                            <?php echo $completed_appointments_count; ?>,
-                            <?php echo $canceled_appointments_count; ?>
+                            <?php echo $pending_count; ?>,
+                            <?php echo $completed_count; ?>,
+                            <?php echo $canceled_count; ?>
                         ],
                         backgroundColor: [
                             'rgba(255, 193, 7, 0.8)',
@@ -501,15 +333,12 @@ try {
                     plugins: {
                         legend: {
                             position: 'bottom',
-                            labels: { padding: 10 } // Reduced padding
-                        },
-                        tooltip: { /* ... tooltip config ... */ }
+                            labels: { padding: 10 }
+                        }
                     }
                 }
             });
         }
-
-        // REMOVE Calendar Initialization code
     });
 </script>
 

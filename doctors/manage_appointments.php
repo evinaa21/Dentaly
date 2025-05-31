@@ -1,70 +1,98 @@
 <?php
-// Start session right away for flash messages
-// session_start(); // Already started in header.php
+// Start session FIRST, before any session variable checks
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
 
-include '../config/db.php'; // Include database connection
+// Include database connection file to access the database
+include '../config/db.php';
 
-// Define page title *before* including header
-$page_title = 'Manage Appointments';
-include '../includes/header.php'; // Include the shared header with the sidebar
-
-// Check if the user is actually a doctor
-if ($_SESSION['role'] !== 'doctor') {
-    echo '<div class="alert alert-danger m-3">Access Denied. You do not have permission to view this page.</div>';
-    include '../includes/footer.php';
+// Security check: Ensure only doctors can access this page
+if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'doctor') {
+    $_SESSION['flash_message'] = ['type' => 'danger', 'text' => 'Access Denied. You do not have permission to view this page.'];
+    header("Location: ../index.php");
     exit;
 }
 
-// Fetch the logged-in doctor's ID from the session
+// Get the logged-in doctor's ID from the session variables
 $doctor_id = $_SESSION['user_id'];
-$error_message = '';
-$success_message = '';
 
 // --- Handle Status Update POST Request ---
+// This section processes form submissions when a doctor updates an appointment status
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
+    // Get and validate the appointment ID using filter_input for security
     $appointment_id_to_update = filter_input(INPUT_POST, 'appointment_id', FILTER_VALIDATE_INT);
+    // Get the new status or null if not set
     $new_status = $_POST['new_status'] ?? null;
-    $valid_statuses_update = ['pending', 'completed', 'canceled']; // Allowed statuses for update
+    // Define the list of valid status values to prevent invalid data
+    $valid_statuses_update = ['pending', 'completed', 'canceled'];
 
+    // Validation: Check if we have a valid appointment ID and status
     if (!$appointment_id_to_update || !$new_status || !in_array($new_status, $valid_statuses_update)) {
         $_SESSION['flash_message'] = ['type' => 'danger', 'text' => 'Invalid data received for status update.'];
     } else {
         try {
-            // Ensure the appointment belongs to the logged-in doctor before updating
-            $update_query = "UPDATE appointments SET status = :status
-                             WHERE id = :appointment_id AND doctor_id = :doctor_id";
-            $update_stmt = $conn->prepare($update_query);
-            $update_stmt->bindParam(':status', $new_status, PDO::PARAM_STR);
-            $update_stmt->bindParam(':appointment_id', $appointment_id_to_update, PDO::PARAM_INT);
-            $update_stmt->bindParam(':doctor_id', $doctor_id, PDO::PARAM_INT); // Security check!
-            $update_stmt->execute();
+            // First, fetch the appointment to check the date
+            $check_query = "SELECT appointment_date FROM appointments 
+                           WHERE id = :appointment_id AND doctor_id = :doctor_id";
+            $check_stmt = $conn->prepare($check_query);
+            $check_stmt->bindParam(':appointment_id', $appointment_id_to_update, PDO::PARAM_INT);
+            $check_stmt->bindParam(':doctor_id', $doctor_id, PDO::PARAM_INT);
+            $check_stmt->execute();
+            $appointment_data = $check_stmt->fetch(PDO::FETCH_ASSOC);
 
-            if ($update_stmt->rowCount() > 0) {
-                $_SESSION['flash_message'] = ['type' => 'success', 'text' => "Appointment #{$appointment_id_to_update} status updated to '{$new_status}'.'"];
+            if (!$appointment_data) {
+                $_SESSION['flash_message'] = ['type' => 'warning', 'text' => 'Appointment not found or you do not have permission to modify it.'];
             } else {
-                $_SESSION['flash_message'] = ['type' => 'warning', 'text' => 'Appointment not found, permission denied, or status already set.'];
+                // Check if trying to mark a future appointment as completed
+                $appointment_date = new DateTime($appointment_data['appointment_date']);
+                $current_date = new DateTime();
+                
+                if ($new_status === 'completed' && $appointment_date > $current_date) {
+                    $_SESSION['flash_message'] = ['type' => 'warning', 'text' => 'Cannot mark future appointments as completed. The appointment is scheduled for ' . $appointment_date->format('M j, Y \a\t g:i A') . '.'];
+                } else {
+                    // Proceed with the update
+                    $update_query = "UPDATE appointments SET status = :status
+                                     WHERE id = :appointment_id AND doctor_id = :doctor_id";
+                    $update_stmt = $conn->prepare($update_query);
+                    $update_stmt->bindParam(':status', $new_status, PDO::PARAM_STR);
+                    $update_stmt->bindParam(':appointment_id', $appointment_id_to_update, PDO::PARAM_INT);
+                    $update_stmt->bindParam(':doctor_id', $doctor_id, PDO::PARAM_INT);
+                    $update_stmt->execute();
+
+                    if ($update_stmt->rowCount() > 0) {
+                        $_SESSION['flash_message'] = ['type' => 'success', 'text' => "Appointment #{$appointment_id_to_update} status updated to '{$new_status}'."];
+                    } else {
+                        $_SESSION['flash_message'] = ['type' => 'warning', 'text' => 'Appointment not found, permission denied, or status already set.'];
+                    }
+                }
             }
         } catch (PDOException $e) {
             $_SESSION['flash_message'] = ['type' => 'danger', 'text' => 'Database error during update.'];
-            // error_log("Manage Appointments POST Update Error: " . $e->getMessage());
         }
     }
-    // Redirect back to the same page (with filter if possible) to prevent re-submission
+    
+    // Redirect back to the same page to prevent re-submission
     $redirect_url = "manage_appointments.php";
     if (isset($_GET['status'])) {
-        $redirect_url .= "?status=" . urlencode($_GET['status']); // Keep filter
+        $redirect_url .= "?status=" . urlencode($_GET['status']);
     }
     header("Location: " . $redirect_url);
     exit;
 }
-// --- End Handle Status Update ---
 
+// NOW include header after all processing that might send headers is complete
+$page_title = 'Manage Appointments';
+include '../includes/header.php';
+
+// Initialize message variables
+$error_message = '';
 
 // --- Filtering ---
-$filter_status = $_GET['status'] ?? 'all'; // Default to 'all'
+$filter_status = $_GET['status'] ?? 'all';
 $valid_statuses = ['all', 'pending', 'completed', 'canceled'];
 if (!in_array($filter_status, $valid_statuses)) {
-    $filter_status = 'all'; // Reset if invalid status provided
+    $filter_status = 'all';
 }
 
 // --- Fetch Appointments ---
@@ -88,7 +116,7 @@ try {
         $query .= " AND a.status = :status";
     }
 
-    $query .= " ORDER BY a.appointment_date DESC"; // Show most recent first
+    $query .= " ORDER BY a.appointment_date DESC";
 
     $stmt = $conn->prepare($query);
     $stmt->bindParam(':doctor_id', $doctor_id, PDO::PARAM_INT);
@@ -100,13 +128,12 @@ try {
 
 } catch (PDOException $e) {
     $error_message = "Error fetching appointments: " . htmlspecialchars($e->getMessage());
-    // error_log("Manage Appointments DB Error: " . $e->getMessage());
 }
 
 // --- Display Flash Message ---
 if (isset($_SESSION['flash_message'])) {
     $flash_message = $_SESSION['flash_message'];
-    unset($_SESSION['flash_message']); // Clear message after displaying
+    unset($_SESSION['flash_message']);
 }
 
 ?>
@@ -128,7 +155,6 @@ if (isset($_SESSION['flash_message'])) {
 <?php if ($error_message): ?>
     <div class="alert alert-danger"><?php echo $error_message; ?></div>
 <?php endif; ?>
-<!-- Removed AJAX message div -->
 
 
 <!-- Filtering Controls -->
@@ -157,7 +183,6 @@ if (isset($_SESSION['flash_message'])) {
         <?php if (!empty($appointments)): ?>
             <div class="table-responsive">
                 <table class="table table-hover table-striped align-middle mb-0">
-                    <!-- Added table-hover, align-middle, mb-0 -->
                     <thead class="table-light">
                         <tr>
                             <th>Patient Name</th>
@@ -165,16 +190,26 @@ if (isset($_SESSION['flash_message'])) {
                             <th>Service</th>
                             <th>Date & Time</th>
                             <th class="text-center">Status</th>
-                            <th class="text-center" style="min-width: 220px;">Actions</th> <!-- Wider actions column -->
+                            <th class="text-center" style="min-width: 220px;">Actions</th>
                         </tr>
                     </thead>
                     <tbody>
                         <?php foreach ($appointments as $appointment): ?>
-                            <tr> <!-- Removed ID from TR -->
+                            <?php
+                            // Check if appointment is in the future
+                            $appointment_date = new DateTime($appointment['appointment_date']);
+                            $current_date = new DateTime();
+                            $is_future = $appointment_date > $current_date;
+                            ?>
+                            <tr>
                                 <td><?php echo htmlspecialchars($appointment['patient_name']); ?></td>
                                 <td><?php echo htmlspecialchars($appointment['contact_number'] ?: 'N/A'); ?></td>
                                 <td><?php echo htmlspecialchars($appointment['service_name']); ?></td>
-                                <td><?php echo htmlspecialchars(date('D, d M Y - h:i A', strtotime($appointment['appointment_date']))); ?>
+                                <td>
+                                    <?php echo htmlspecialchars(date('D, d M Y - h:i A', strtotime($appointment['appointment_date']))); ?>
+                                    <?php if ($is_future): ?>
+                                        <span class="badge bg-info ms-1" title="Future appointment">Future</span>
+                                    <?php endif; ?>
                                 </td>
                                 <td class="text-center">
                                     <?php
@@ -186,7 +221,7 @@ if (isset($_SESSION['flash_message'])) {
                                     elseif ($appointment['status'] == 'canceled')
                                         $status_class = 'bg-danger';
                                     ?>
-                                    <span class="badge <?php echo $status_class; ?>"> <!-- Removed ID from badge -->
+                                    <span class="badge <?php echo $status_class; ?>">
                                         <?php echo ucfirst($appointment['status']); ?>
                                     </span>
                                 </td>
@@ -205,17 +240,24 @@ if (isset($_SESSION['flash_message'])) {
                                         <input type="hidden" name="appointment_id"
                                             value="<?php echo $appointment['appointment_id']; ?>">
                                         <input type="hidden" name="update_status" value="1">
-                                        <!-- Identifier for the POST handler -->
 
                                         <select name="new_status" class="form-select form-select-sm d-inline-block w-auto"
-                                            aria-label="Update status"> <!-- Added name attribute -->
+                                            aria-label="Update status">
                                             <option value="pending" <?php echo $appointment['status'] === 'pending' ? 'selected' : ''; ?>>Pending</option>
-                                            <option value="completed" <?php echo $appointment['status'] === 'completed' ? 'selected' : ''; ?>>Completed</option>
+                                            
+                                            <!-- Disable "Completed" option for future appointments -->
+                                            <option value="completed" 
+                                                <?php echo $appointment['status'] === 'completed' ? 'selected' : ''; ?>
+                                                <?php echo $is_future ? 'disabled' : ''; ?>
+                                                <?php echo $is_future ? 'title="Cannot mark future appointments as completed"' : ''; ?>>
+                                                Completed<?php echo $is_future ? ' (Future)' : ''; ?>
+                                            </option>
+                                            
                                             <option value="canceled" <?php echo $appointment['status'] === 'canceled' ? 'selected' : ''; ?>>Canceled</option>
                                         </select>
                                         <button type="submit" class="btn btn-sm btn-primary ms-1" data-bs-toggle="tooltip"
-                                            title="Update Status"> <!-- Changed to type="submit" -->
-                                            <i class="fas fa-save"></i> <!-- Save icon -->
+                                            title="Update Status">
+                                            <i class="fas fa-save"></i>
                                         </button>
                                     </form>
                                 </td>
@@ -230,9 +272,15 @@ if (isset($_SESSION['flash_message'])) {
     </div>
 </div>
 
-<!-- REMOVED JavaScript for AJAX Status Update -->
+<!-- Add info alert about future appointments -->
+<div class="alert alert-info mt-3">
+    <i class="fas fa-info-circle me-2"></i>
+    <strong>Note:</strong> Future appointments cannot be marked as "Completed" until the appointment date has passed. 
+    You can still mark them as "Canceled" if needed.
+</div>
+
 <script>
-    // Initialize Bootstrap Tooltips when DOM is ready (Keep this part)
+    // Initialize Bootstrap Tooltips when DOM is ready
     document.addEventListener('DOMContentLoaded', function () {
         var tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'))
         var tooltipList = tooltipTriggerList.map(function (tooltipTriggerEl) {
@@ -240,7 +288,6 @@ if (isset($_SESSION['flash_message'])) {
         });
     });
 </script>
-
 
 <?php
 include '../includes/footer.php'; // Include the shared footer

@@ -1,5 +1,7 @@
 <?php
-session_start();
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
 
 if (!isset($_SESSION['role'])) {
     header("Location: ../index.php");
@@ -287,18 +289,39 @@ $user_role = $_SESSION['role'] ?? 'guest'; // Get role
             border-radius: 0.7rem;
             padding: 0.7rem 0;
             transition: background 0.18s, color 0.18s, box-shadow 0.18s, transform 0.18s;
-            border: none;
-            background: linear-gradient(90deg, #fff 80%, #f8d7da 100%);
+            border: 2px solid #dc3545;
+            background: #fff;
             color: #dc3545;
             font-size: 1.05rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            text-decoration: none;
         }
 
         .logout-button:hover,
         .logout-button:focus {
-            background: #f8d7da;
-            color: #b02a37;
-            box-shadow: 0 2px 8px 0 rgba(220, 53, 69, 0.13);
-            transform: scale(1.03);
+            background: #dc3545;
+            color: #fff;
+            border-color: #dc3545;
+            box-shadow: 0 4px 12px 0 rgba(220, 53, 69, 0.25);
+            transform: translateY(-2px) scale(1.02);
+            text-decoration: none;
+        }
+
+        .logout-button:active {
+            transform: translateY(0) scale(1);
+            box-shadow: 0 2px 6px 0 rgba(220, 53, 69, 0.15);
+        }
+
+        .logout-button i {
+            font-size: 1.1rem;
+            transition: transform 0.18s;
+        }
+
+        .logout-button:hover i {
+            transform: rotate(-10deg);
         }
 
         @media (max-width: 991.98px) {
@@ -378,7 +401,6 @@ $user_role = $_SESSION['role'] ?? 'guest'; // Get role
                         ['link' => 'manage_users.php', 'icon' => 'fas fa-users-cog', 'label' => 'Manage Users'],
                         ['link' => 'manage_services.php', 'icon' => 'fas fa-briefcase-medical', 'label' => 'Manage Services'],
                         ['link' => 'client_history.php', 'icon' => 'fas fa-history', 'label' => 'Client History'],
-                        ['link' => 'manage_schedules.php', 'icon' => 'fas fa-clock', 'label' => 'Manage Schedules'],
                     ];
                 } elseif ($user_role === 'doctor') {
                     $menuItems = [
@@ -427,142 +449,10 @@ $user_role = $_SESSION['role'] ?? 'guest'; // Get role
     <!-- Main Content Wrapper -->
     <div class="main-content">
 
-        <!-- Top Bar (Added for Notifications) -->
-        <header class="top-bar shadow-sm mb-4 bg-light">
-            <div class="container-fluid d-flex justify-content-end align-items-center py-2">
-
-                <!-- Notification Dropdown -->
-                <div class="dropdown me-3">
-                    <a href="#" class="text-secondary position-relative" id="notificationDropdown" role="button"
-                        data-bs-toggle="dropdown" aria-expanded="false">
-                        <i class="fas fa-bell fa-lg"></i>
-                        <span id="notification-badge"
-                            class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger"
-                            style="display: none;">
-                            <span id="notification-count">0</span>+
-                            <span class="visually-hidden">unread notifications</span>
-                        </span>
-                    </a>
-                    <ul class="dropdown-menu dropdown-menu-end notification-dropdown-menu"
-                        aria-labelledby="notificationDropdown">
-                        <li>
-                            <h6 class="dropdown-header">Notifications</h6>
-                        </li>
-                        <li>
-                            <hr class="dropdown-divider">
-                        </li>
-                        <div id="notification-list">
-                            <!-- Notifications will be loaded here -->
-                            <li><a class="dropdown-item text-muted" href="#">No new notifications</a></li>
-                        </div>
-                        <li>
-                            <hr class="dropdown-divider">
-                        </li>
-                        <li><a class="dropdown-item text-center text-primary small" href="#">View All Notifications</a>
-                        </li> <!-- Link to a future page -->
-                    </ul>
-                </div>
-
-                <!-- Optional: User profile link/dropdown can go here too -->
-                <span class="text-muted small me-2">Logged in as:
-                    <?php echo htmlspecialchars($_SESSION['user_name'] ?? 'User'); ?></span>
-
-            </div>
-        </header>
-
         <!-- Main Page Content Start -->
         <main class="container-fluid">
             <!-- The rest of the page content from other files will go here -->
         </main>
 
-        <script>
-            document.addEventListener('DOMContentLoaded', function () {
-                const notificationBadge = document.getElementById('notification-badge');
-                const notificationCountSpan = document.getElementById('notification-count');
-                const notificationListDiv = document.getElementById('notification-list');
-                const notificationDropdown = document.getElementById('notificationDropdown');
 
-                function loadNotifications() {
-                    // Path to your fetch_notifications.php script from the 'includes' directory
-                    fetch('../ajax/fetch_notifications.php')
-                        .then(response => response.json())
-                        .then(data => {
-                            if (data.status === 'success') {
-                                // Update badge count
-                                notificationCountSpan.textContent = data.unread_count > 9 ? '9+' : data.unread_count;
-                                if (data.unread_count > 0) {
-                                    notificationBadge.style.display = 'inline-block'; // Show badge
-                                } else {
-                                    notificationBadge.style.display = 'none'; // Hide badge
-                                }
-
-                                // Populate notification list
-                                notificationListDiv.innerHTML = ''; // Clear existing items
-                                if (data.items.length > 0) {
-                                    data.items.forEach(item => {
-                                        const listItem = document.createElement('li');
-                                        const link = document.createElement('a');
-                                        link.className = 'dropdown-item notification-item unread'; // All fetched are initially unread
-                                        link.href = item.link || '#'; // Use provided link or # if null
-
-                                        const messageDiv = document.createElement('div');
-                                        messageDiv.textContent = item.message;
-
-                                        const timeSmall = document.createElement('small');
-                                        timeSmall.className = 'text-muted';
-                                        timeSmall.textContent = new Date(item.created_at).toLocaleString();
-
-                                        link.appendChild(messageDiv);
-                                        link.appendChild(timeSmall);
-                                        listItem.appendChild(link);
-                                        notificationListDiv.appendChild(listItem);
-                                    });
-                                } else {
-                                    const noNotificationItem = document.createElement('li');
-                                    noNotificationItem.innerHTML = '<a class="dropdown-item text-muted" href="#">No new notifications</a>';
-                                    notificationListDiv.appendChild(noNotificationItem);
-                                }
-                            } else {
-                                console.error('Failed to load notifications:', data.message);
-                                const errorItem = document.createElement('li');
-                                errorItem.innerHTML = '<a class="dropdown-item text-danger" href="#">Error loading notifications</a>';
-                                notificationListDiv.innerHTML = ''; // Clear previous
-                                notificationListDiv.appendChild(errorItem);
-                            }
-                        })
-                        .catch(error => {
-                            console.error('Error fetching notifications:', error);
-                            const errorItem = document.createElement('li');
-                            errorItem.innerHTML = '<a class="dropdown-item text-danger" href="#">Error loading notifications</a>';
-                            notificationListDiv.innerHTML = ''; // Clear previous
-                            notificationListDiv.appendChild(errorItem);
-                        });
-                }
-
-                // Load notifications on page load
-                loadNotifications();
-
-                // Optional: Refresh notifications periodically (e.g., every 60 seconds)
-                // setInterval(loadNotifications, 60000);
-
-                // Optional: Mark notifications as read when dropdown is opened
-                // This is a basic example; a more robust solution would mark specific notifications
-                // or use a separate "mark all as read" button.
-                if (notificationDropdown) {
-                    notificationDropdown.addEventListener('show.bs.dropdown', function () {
-                        // Here you could make an AJAX call to a script that marks notifications as read in the DB
-                        // For example: fetch('../ajax/mark_notifications_read.php', { method: 'POST' })
-                        // After marking them read, you might want to visually update them or rely on the next loadNotifications call.
-                        // For now, the badge will update on the next full load/refresh.
-                        // To immediately hide the badge after opening (assuming all are now "seen"):
-                        // if (parseInt(notificationCountSpan.textContent) > 0) {
-                        //     setTimeout(() => { // Give a moment for visual feedback
-                        //         notificationBadge.style.display = 'none';
-                        //         notificationCountSpan.textContent = '0';
-                        //     }, 2000); // Adjust timing or implement proper read marking
-                        // }
-                    });
-                }
-            });
-        </script>
 </body>

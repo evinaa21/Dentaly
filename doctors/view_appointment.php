@@ -18,6 +18,64 @@ $appointment_id = null;
 $appointment = null;
 $error_message = '';
 
+// Handle AJAX status update requests
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['ajax_update'])) {
+    header('Content-Type: application/json');
+    
+    $appointment_id_update = filter_input(INPUT_POST, 'appointment_id', FILTER_VALIDATE_INT);
+    $new_status = $_POST['new_status'] ?? null;
+    
+    $response = ['success' => false, 'message' => ''];
+    
+    if (!$appointment_id_update || !$new_status || !in_array($new_status, ['completed', 'canceled'])) {
+        $response['message'] = 'Invalid data provided.';
+    } else {
+        try {
+            // First check the appointment date and ownership
+            $check_query = "SELECT appointment_date FROM appointments 
+                           WHERE id = :appointment_id AND doctor_id = :doctor_id";
+            $check_stmt = $conn->prepare($check_query);
+            $check_stmt->bindParam(':appointment_id', $appointment_id_update, PDO::PARAM_INT);
+            $check_stmt->bindParam(':doctor_id', $doctor_id, PDO::PARAM_INT);
+            $check_stmt->execute();
+            $appointment_data = $check_stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if (!$appointment_data) {
+                $response['message'] = 'Appointment not found or access denied.';
+            } else {
+                // Check if trying to mark future appointment as completed
+                $appointment_date = new DateTime($appointment_data['appointment_date']);
+                $current_date = new DateTime();
+                
+                if ($new_status === 'completed' && $appointment_date > $current_date) {
+                    $response['message'] = 'Cannot mark future appointments as completed. Appointment is scheduled for ' . $appointment_date->format('M j, Y \a\t g:i A') . '.';
+                } else {
+                    // Update the status
+                    $update_query = "UPDATE appointments SET status = :status 
+                                     WHERE id = :appointment_id AND doctor_id = :doctor_id";
+                    $update_stmt = $conn->prepare($update_query);
+                    $update_stmt->bindParam(':status', $new_status, PDO::PARAM_STR);
+                    $update_stmt->bindParam(':appointment_id', $appointment_id_update, PDO::PARAM_INT);
+                    $update_stmt->bindParam(':doctor_id', $doctor_id, PDO::PARAM_INT);
+                    $update_stmt->execute();
+                    
+                    if ($update_stmt->rowCount() > 0) {
+                        $response['success'] = true;
+                        $response['message'] = "Appointment status updated to {$new_status}.";
+                    } else {
+                        $response['message'] = 'Failed to update appointment status.';
+                    }
+                }
+            }
+        } catch (PDOException $e) {
+            $response['message'] = 'Database error occurred.';
+        }
+    }
+    
+    echo json_encode($response);
+    exit;
+}
+
 // 1. Get Appointment ID from URL and Validate
 if (!isset($_GET['id']) || !($appointment_id = filter_input(INPUT_GET, 'id', FILTER_VALIDATE_INT))) {
     $error_message = "Invalid or missing appointment ID.";
@@ -29,16 +87,18 @@ if (!isset($_GET['id']) || !($appointment_id = filter_input(INPUT_GET, 'id', FIL
                 a.id AS appointment_id,
                 a.appointment_date,
                 a.status,
-                a.notes AS appointment_notes, -- Assuming an 'notes' column exists in 'appointments'
+                a.notes AS appointment_notes,
                 p.id AS patient_id,
                 p.first_name AS patient_first_name,
                 p.last_name AS patient_last_name,
                 p.contact_number AS patient_contact,
                 p.address AS patient_address,
+                p.dental_history,
+                p.created_at AS patient_created,
                 s.id AS service_id,
                 s.service_name,
                 s.description AS service_description,
-                s.price AS service_price -- Assuming a price column exists
+                s.price AS service_price
             FROM appointments a
             JOIN patients p ON a.patient_id = p.id
             JOIN services s ON a.service_id = s.id
@@ -57,7 +117,6 @@ if (!isset($_GET['id']) || !($appointment_id = filter_input(INPUT_GET, 'id', FIL
 
     } catch (PDOException $e) {
         $error_message = "Database error fetching appointment details: " . htmlspecialchars($e->getMessage());
-        // error_log("View Appointment DB Error: " . $e->getMessage()); // Log detailed error
     }
 }
 ?>
@@ -68,7 +127,7 @@ if (!isset($_GET['id']) || !($appointment_id = filter_input(INPUT_GET, 'id', FIL
         <i class="fas fa-calendar-check me-2 text-primary"></i>
         <?php echo $appointment ? 'Appointment Details' : 'View Appointment'; ?>
     </h2>
-    <a href="index.php" class="btn btn-secondary"> <!-- Link back to Doctor Dashboard -->
+    <a href="index.php" class="btn btn-secondary">
         <i class="fas fa-arrow-left me-2"></i> Back to Dashboard
     </a>
 </div>
@@ -77,6 +136,9 @@ if (!isset($_GET['id']) || !($appointment_id = filter_input(INPUT_GET, 'id', FIL
 <?php if ($error_message): ?>
     <div class="alert alert-danger"><?php echo $error_message; ?></div>
 <?php else: ?>
+    <!-- Alert container for AJAX messages -->
+    <div id="alertContainer"></div>
+
     <!-- Main Content Row -->
     <div class="row">
         <!-- Left Column: Appointment & Service Details -->
@@ -95,18 +157,28 @@ if (!isset($_GET['id']) || !($appointment_id = filter_input(INPUT_GET, 'id', FIL
                     elseif ($appointment['status'] == 'canceled')
                         $status_class = 'bg-danger';
                     ?>
-                    <span
-                        class="badge <?php echo $status_class; ?> fs-6"><?php echo ucfirst(htmlspecialchars($appointment['status'])); ?></span>
+                    <span class="badge <?php echo $status_class; ?> fs-6" id="statusBadge">
+                        <?php echo ucfirst(htmlspecialchars($appointment['status'])); ?>
+                    </span>
                 </div>
                 <div class="card-body">
                     <dl class="row mb-0">
                         <dt class="col-sm-4">Date & Time:</dt>
                         <dd class="col-sm-8">
                             <?php echo htmlspecialchars(date('D, d M Y - h:i A', strtotime($appointment['appointment_date']))); ?>
+                            <?php
+                            // Check if appointment is in the future
+                            $appointment_date = new DateTime($appointment['appointment_date']);
+                            $current_date = new DateTime();
+                            $is_future = $appointment_date > $current_date;
+                            ?>
+                            <?php if ($is_future): ?>
+                                <span class="badge bg-info ms-1" title="Future appointment">Future</span>
+                            <?php endif; ?>
                         </dd>
 
                         <dt class="col-sm-4">Status:</dt>
-                        <dd class="col-sm-8"><?php echo ucfirst(htmlspecialchars($appointment['status'])); ?></dd>
+                        <dd class="col-sm-8" id="statusText"><?php echo ucfirst(htmlspecialchars($appointment['status'])); ?></dd>
 
                         <dt class="col-sm-4">Appointment ID:</dt>
                         <dd class="col-sm-8">#<?php echo htmlspecialchars($appointment['appointment_id']); ?></dd>
@@ -168,18 +240,21 @@ if (!isset($_GET['id']) || !($appointment_id = filter_input(INPUT_GET, 'id', FIL
                             <dd class="col-sm-8"><?php echo htmlspecialchars($appointment['patient_address']); ?></dd>
                         <?php endif; ?>
 
-                        <?php if (!empty($appointment['patient_dob'])): ?>
-                            <dt class="col-sm-4">Date of Birth:</dt>
+                        <?php if (!empty($appointment['dental_history'])): ?>
+                            <dt class="col-sm-4">Dental History:</dt>
+                            <dd class="col-sm-8"><?php echo nl2br(htmlspecialchars($appointment['dental_history'])); ?></dd>
+                        <?php endif; ?>
+
+                        <?php if (!empty($appointment['patient_created'])): ?>
+                            <dt class="col-sm-4">Patient Since:</dt>
                             <dd class="col-sm-8">
-                                <?php echo htmlspecialchars(date('d M Y', strtotime($appointment['patient_dob']))); ?> (Age:
-                                <?php echo date_diff(date_create($appointment['patient_dob']), date_create('today'))->y; ?>)
+                                <?php echo htmlspecialchars(date('d M Y', strtotime($appointment['patient_created']))); ?>
                             </dd>
                         <?php endif; ?>
 
                         <dt class="col-sm-4">Patient ID:</dt>
                         <dd class="col-sm-8">#<?php echo htmlspecialchars($appointment['patient_id']); ?></dd>
                     </dl>
-                    <!-- Link to full patient record -->
                     <div class="mt-3 border-top pt-3 text-center">
                         <a href="patient_details.php?patient_id=<?php echo $appointment['patient_id']; ?>"
                             class="btn btn-sm btn-outline-secondary">
@@ -189,46 +264,64 @@ if (!isset($_GET['id']) || !($appointment_id = filter_input(INPUT_GET, 'id', FIL
                 </div>
             </div>
 
-            <!-- Actions Card -->
+            <!-- Actions Card - For changing appointment status -->
             <div class="card shadow-sm">
                 <div class="card-header bg-light">
                     <h5 class="mb-0"><i class="fas fa-tasks me-2 text-warning"></i> Actions</h5>
                 </div>
-                <div class="card-body text-center">
+                <div class="card-body text-center" id="actionsContainer">
                     <?php if ($appointment['status'] == 'pending'): ?>
-                        <button class="btn btn-success me-2"
-                            onclick="updateAppointmentStatus(<?php echo $appointment_id; ?>, 'completed')">
-                            <i class="fas fa-check me-1"></i> Mark as Completed
+                        <?php
+                        // Check if appointment is in the future for button state
+                        $appointment_date = new DateTime($appointment['appointment_date']);
+                        $current_date = new DateTime();
+                        $is_future = $appointment_date > $current_date;
+                        ?>
+                        
+                        <!-- Mark as Completed Button -->
+                        <button class="btn btn-success me-2" id="completeBtn"
+                            onclick="updateAppointmentStatus(<?php echo $appointment_id; ?>, 'completed')"
+                            <?php echo $is_future ? 'disabled' : ''; ?>
+                            title="<?php echo $is_future ? 'Cannot mark future appointments as completed' : 'Mark as Completed'; ?>">
+                            <i class="fas fa-check me-1"></i> 
+                            Mark as Completed<?php echo $is_future ? ' (Future)' : ''; ?>
                         </button>
-                        <button class="btn btn-danger me-2"
+                        
+                        <!-- Cancel Appointment Button -->
+                        <button class="btn btn-danger me-2" id="cancelBtn"
                             onclick="updateAppointmentStatus(<?php echo $appointment_id; ?>, 'canceled')">
                             <i class="fas fa-times me-1"></i> Cancel Appointment
                         </button>
+                        
+                        <?php if ($is_future): ?>
+                            <div class="alert alert-info mt-3 mb-0">
+                                <i class="fas fa-info-circle me-1"></i>
+                                <small>This appointment is scheduled for the future and cannot be marked as completed yet.</small>
+                            </div>
+                        <?php endif; ?>
+                        
                     <?php elseif ($appointment['status'] == 'completed'): ?>
                         <p class="text-success mb-0"><i class="fas fa-check-circle me-1"></i> This appointment is completed.</p>
-                        <!-- Option to revert? Maybe too complex for now -->
                     <?php elseif ($appointment['status'] == 'canceled'): ?>
                         <p class="text-danger mb-0"><i class="fas fa-times-circle me-1"></i> This appointment was canceled.</p>
-                        <!-- Option to reschedule? -->
                     <?php endif; ?>
 
-                    <!-- Add Notes Button (Could open a modal or link to another page) -->
+                    <!-- Add Notes Button -->
                     <button class="btn btn-outline-info mt-3" data-bs-toggle="modal" data-bs-target="#notesModal">
                         <i class="fas fa-sticky-note me-1"></i> Add/Edit Notes
                     </button>
                 </div>
             </div>
 
-        </div> <!-- /col-lg-6 -->
-    </div> <!-- /row -->
+        </div>
+    </div>
 
-    <!-- Notes Modal (Example) -->
+    <!-- Notes Modal -->
     <div class="modal fade" id="notesModal" tabindex="-1" aria-labelledby="notesModalLabel" aria-hidden="true">
         <div class="modal-dialog modal-lg">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h5 class="modal-title" id="notesModalLabel"><i class="fas fa-sticky-note me-2"></i> Appointment Notes
-                    </h5>
+                    <h5 class="modal-title" id="notesModalLabel"><i class="fas fa-sticky-note me-2"></i> Appointment Notes</h5>
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
@@ -257,65 +350,116 @@ if (!isset($_GET['id']) || !($appointment_id = filter_input(INPUT_GET, 'id', FIL
                 return;
             }
 
-            // Basic Fetch API example for AJAX
-            fetch('../ajax/update_appointment_status.php', { // You need to create this endpoint
+            // Show loading state
+            const completeBtn = document.getElementById('completeBtn');
+            const cancelBtn = document.getElementById('cancelBtn');
+            if (completeBtn) completeBtn.disabled = true;
+            if (cancelBtn) cancelBtn.disabled = true;
+
+            fetch('view_appointment.php?id=<?php echo $appointment_id; ?>', {
                 method: 'POST',
                 headers: {
-                    'Content-Type': 'application/json',
+                    'Content-Type': 'application/x-www-form-urlencoded',
                 },
-                body: JSON.stringify({
-                    appointment_id: id,
-                    status: newStatus
-                })
+                body: `ajax_update=1&appointment_id=${id}&new_status=${newStatus}`
             })
-                .then(response => response.json())
-                .then(data => {
-                    if (data.status === 'success') {
-                        // Reload the page to show updated status and buttons
-                        window.location.reload();
-                        // Or update UI dynamically (more complex)
-                        // alert('Status updated successfully!');
-                    } else {
-                        alert('Error updating status: ' + (data.message || 'Unknown error'));
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    showAlert('success', data.message);
+                    
+                    // Update UI elements
+                    const statusBadge = document.getElementById('statusBadge');
+                    const statusText = document.getElementById('statusText');
+                    const actionsContainer = document.getElementById('actionsContainer');
+                    
+                    if (statusBadge && statusText && actionsContainer) {
+                        // Update status display
+                        statusText.textContent = newStatus.charAt(0).toUpperCase() + newStatus.slice(1);
+                        
+                        // Update badge
+                        statusBadge.textContent = newStatus.charAt(0).toUpperCase() + newStatus.slice(1);
+                        statusBadge.className = 'badge fs-6 ' + (newStatus === 'completed' ? 'bg-success' : 'bg-danger');
+                        
+                        // Update actions section
+                        if (newStatus === 'completed') {
+                            actionsContainer.innerHTML = `
+                                <p class="text-success mb-0"><i class="fas fa-check-circle me-1"></i> This appointment is completed.</p>
+                                <button class="btn btn-outline-info mt-3" data-bs-toggle="modal" data-bs-target="#notesModal">
+                                    <i class="fas fa-sticky-note me-1"></i> Add/Edit Notes
+                                </button>
+                            `;
+                        } else if (newStatus === 'canceled') {
+                            actionsContainer.innerHTML = `
+                                <p class="text-danger mb-0"><i class="fas fa-times-circle me-1"></i> This appointment was canceled.</p>
+                                <button class="btn btn-outline-info mt-3" data-bs-toggle="modal" data-bs-target="#notesModal">
+                                    <i class="fas fa-sticky-note me-1"></i> Add/Edit Notes
+                                </button>
+                            `;
+                        }
                     }
-                })
-                .catch(error => {
-                    console.error('Error:', error);
-                    alert('An error occurred while communicating with the server.');
-                });
+                } else {
+                    showAlert('danger', data.message);
+                    // Re-enable buttons on error
+                    if (completeBtn) completeBtn.disabled = false;
+                    if (cancelBtn) cancelBtn.disabled = false;
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                showAlert('danger', 'An error occurred while communicating with the server.');
+                // Re-enable buttons on error
+                if (completeBtn) completeBtn.disabled = false;
+                if (cancelBtn) cancelBtn.disabled = false;
+            });
         }
 
         function saveNotes() {
             const form = document.getElementById('notesForm');
             const formData = new FormData(form);
 
-            fetch('../ajax/save_appointment_notes.php', { // You need to create this endpoint
+            fetch('../ajax/save_appointment_notes.php', {
                 method: 'POST',
-                body: formData // FormData handles encoding
+                body: formData
             })
-                .then(response => response.json())
-                .then(data => {
-                    if (data.status === 'success') {
-                        // Close modal and optionally show success message
-                        var notesModal = bootstrap.Modal.getInstance(document.getElementById('notesModal'));
-                        notesModal.hide();
-                        // Optionally update notes display on page without reload
-                        alert('Notes saved successfully!');
-                        // Simple reload for now:
-                        window.location.reload();
-                    } else {
-                        alert('Error saving notes: ' + (data.message || 'Unknown error'));
-                    }
-                })
-                .catch(error => {
-                    console.error('Error:', error);
-                    alert('An error occurred while communicating with the server.');
-                });
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    var notesModal = bootstrap.Modal.getInstance(document.getElementById('notesModal'));
+                    notesModal.hide();
+                    showAlert('success', 'Notes saved successfully!');
+                    // Optionally reload to show updated notes
+                    setTimeout(() => window.location.reload(), 1500);
+                } else {
+                    showAlert('danger', 'Error saving notes: ' + (data.message || 'Unknown error'));
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                showAlert('danger', 'An error occurred while saving notes.');
+            });
+        }
+
+        function showAlert(type, message) {
+            const alertContainer = document.getElementById('alertContainer');
+            const alertDiv = document.createElement('div');
+            alertDiv.className = `alert alert-${type} alert-dismissible fade show`;
+            alertDiv.innerHTML = `
+                ${message}
+                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+            `;
+            
+            alertContainer.appendChild(alertDiv);
+            
+            // Auto-dismiss after 5 seconds
+            setTimeout(() => {
+                if (alertDiv.parentElement) {
+                    alertDiv.remove();
+                }
+            }, 5000);
         }
     </script>
 
-<?php endif; // End check for error message ?>
+<?php endif; ?>
 
-<?php
-include '../includes/footer.php'; // Include the shared footer
-?>
+<?php include '../includes/footer.php'; ?>

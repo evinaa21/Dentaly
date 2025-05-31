@@ -1,301 +1,386 @@
 <?php
 // Define page title *before* including header
-$page_title = 'Add New Appointment';
-include '../includes/header.php'; // Include the shared header with the sidebar
+$page_title = "Book New Appointment";
+include '../includes/header.php';
 
 // Check if the user is actually a receptionist
-if ($_SESSION['role'] !== 'receptionist') {
+if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'receptionist') {
     echo '<div class="alert alert-danger m-3">Access Denied. You do not have permission to view this page.</div>';
     include '../includes/footer.php';
     exit;
 }
 
-$patients = [];
-$doctors = [];
-$services = [];
-$error_message = ''; // For fetch errors
-
-// --- Fetch data for dropdowns ---
-try {
-    $patients = $conn->query("SELECT id, CONCAT(first_name, ' ', last_name) AS full_name FROM patients ORDER BY last_name, first_name")->fetchAll(PDO::FETCH_ASSOC);
-    $doctors = $conn->query("SELECT id, name FROM users WHERE role = 'doctor' ORDER BY name")->fetchAll(PDO::FETCH_ASSOC);
-    $services = $conn->query("SELECT id, service_name FROM services ORDER BY service_name")->fetchAll(PDO::FETCH_ASSOC);
-} catch (PDOException $e) {
-    $error_message = "Error fetching data for dropdowns: " . $e->getMessage();
-    // error_log("Add Appointment Fetch Error: " . $e->getMessage());
+// DB connection
+if (!isset($conn)) {
+    include '../config/db.php';
 }
 
-// --- Handle form submission for adding an appointment ---
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['appointment_form'])) {
+// For large patient databases, use AJAX search instead of loading all patients
+$doctors = $conn->query("SELECT id, name FROM users WHERE role = 'doctor' ORDER BY name")->fetchAll(PDO::FETCH_ASSOC);
+$services = $conn->query("SELECT id, service_name, price FROM services ORDER BY service_name")->fetchAll(PDO::FETCH_ASSOC);
+
+$success = false;
+$error = '';
+$submitted_data = []; // To repopulate form on error
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $submitted_data = $_POST; // Store submitted data
+
     $patient_id = filter_input(INPUT_POST, 'patient_id', FILTER_VALIDATE_INT);
     $doctor_id = filter_input(INPUT_POST, 'doctor_id', FILTER_VALIDATE_INT);
     $service_id = filter_input(INPUT_POST, 'service_id', FILTER_VALIDATE_INT);
-    $appointment_date = $_POST['appointment_date'] ?? '';
-    $status = $_POST['status'] ?? 'pending'; // Default to pending
+    $appointment_date_str = trim($_POST['appointment_date'] ?? '');
+    $appointment_time_str = trim($_POST['appointment_time'] ?? '');
+    $notes = trim($_POST['notes'] ?? '');
 
-    // Basic Validation
-    if (!$patient_id || !$doctor_id || !$service_id || empty($appointment_date) || !in_array($status, ['pending', 'completed', 'canceled'])) {
-        $_SESSION['flash_message'] = ['type' => 'danger', 'text' => 'Invalid data submitted. Please check all fields.'];
+    // Basic date validation
+    $date_valid = false;
+    if (!empty($appointment_date_str)) {
+        $date_obj = DateTime::createFromFormat('Y-m-d', $appointment_date_str);
+        $date_valid = $date_obj && $date_obj->format('Y-m-d') === $appointment_date_str;
+    }
+
+    if (!$patient_id || !$doctor_id || !$service_id || !$date_valid || empty($appointment_time_str)) {
+        $error = "All fields marked with * are required. Please ensure date and time are valid.";
     } else {
+        $datetime_str = $appointment_date_str . ' ' . $appointment_time_str;
         try {
-            // Insert the new appointment
-            $insert_query = "
-                INSERT INTO appointments (patient_id, doctor_id, service_id, appointment_date, status)
-                VALUES (:patient_id, :doctor_id, :service_id, :appointment_date, :status)
-            ";
-            $stmt = $conn->prepare($insert_query);
-            $stmt->bindParam(':patient_id', $patient_id, PDO::PARAM_INT);
-            $stmt->bindParam(':doctor_id', $doctor_id, PDO::PARAM_INT);
-            $stmt->bindParam(':service_id', $service_id, PDO::PARAM_INT);
-            $stmt->bindParam(':appointment_date', $appointment_date, PDO::PARAM_STR);
-            $stmt->bindParam(':status', $status, PDO::PARAM_STR);
+            $appointment_datetime_obj = new DateTime($datetime_str);
+            $datetime_sql_format = $appointment_datetime_obj->format('Y-m-d H:i:s');
+            $current_datetime_obj = new DateTime();
+            $current_datetime_obj->modify('-5 minutes');
 
-            if ($stmt->execute()) {
-                $_SESSION['flash_message'] = ['type' => 'success', 'text' => 'Appointment added successfully!'];
-                // Redirect to manage page after successful addition
-                header("Location: manage_appointments.php");
-                exit;
+            if ($appointment_datetime_obj < $current_datetime_obj) {
+                $error = "Cannot book appointments in the past. Please select a future date and time.";
             } else {
-                $_SESSION['flash_message'] = ['type' => 'danger', 'text' => 'Failed to add the appointment. Database error.'];
+                $appointment_hour = (int) $appointment_datetime_obj->format('H');
+                if ($appointment_hour < 8 || $appointment_hour >= 18) {
+                    $error = "Appointments must be scheduled between 8:00 AM and 5:59 PM.";
+                } else {
+                    try {
+                        // Check if doctor is already booked within 1.5 hours of this time
+                        $appointment_start = clone $appointment_datetime_obj;
+                        $appointment_end = clone $appointment_datetime_obj;
+                        $appointment_start->modify('-90 minutes');
+                        $appointment_end->modify('+90 minutes');
+
+                        $start_time_formatted = $appointment_start->format('Y-m-d H:i:s');
+                        $end_time_formatted = $appointment_end->format('Y-m-d H:i:s');
+
+                        $check_stmt = $conn->prepare("SELECT COUNT(*) FROM appointments 
+                                                      WHERE doctor_id = :doctor_id 
+                                                      AND appointment_date BETWEEN :start_time AND :end_time
+                                                      AND status != 'canceled'");
+                        $check_stmt->bindParam(':doctor_id', $doctor_id, PDO::PARAM_INT);
+                        $check_stmt->bindParam(':start_time', $start_time_formatted, PDO::PARAM_STR);
+                        $check_stmt->bindParam(':end_time', $end_time_formatted, PDO::PARAM_STR);
+                        $check_stmt->execute();
+                        $exists = $check_stmt->fetchColumn();
+
+                        if ($exists > 0) {
+                            $error = "This doctor already has an appointment within 1.5 hours of the selected time. Each appointment requires at least 90 minutes. Please choose a different time or doctor.";
+                        } else {
+                            // Check if patient already has an appointment within 1.5 hours of this time
+                            $check_patient = $conn->prepare("SELECT COUNT(*) FROM appointments 
+                                                             WHERE patient_id = :patient_id 
+                                                             AND appointment_date BETWEEN :start_time AND :end_time
+                                                             AND status != 'canceled'");
+                            $check_patient->bindParam(':patient_id', $patient_id, PDO::PARAM_INT);
+                            $check_patient->bindParam(':start_time', $start_time_formatted, PDO::PARAM_STR);
+                            $check_patient->bindParam(':end_time', $end_time_formatted, PDO::PARAM_STR);
+                            $check_patient->execute();
+                            $patient_exists = $check_patient->fetchColumn();
+
+                            if ($patient_exists > 0) {
+                                $error = "This patient already has another appointment within 1.5 hours of the selected time. Please choose a different time.";
+                            } else {
+                                $stmt = $conn->prepare("INSERT INTO appointments (patient_id, doctor_id, service_id, appointment_date, notes) VALUES (:patient_id, :doctor_id, :service_id, :appointment_date, :notes)");
+                                $stmt->bindParam(':patient_id', $patient_id, PDO::PARAM_INT);
+                                $stmt->bindParam(':doctor_id', $doctor_id, PDO::PARAM_INT);
+                                $stmt->bindParam(':service_id', $service_id, PDO::PARAM_INT);
+                                $stmt->bindParam(':appointment_date', $datetime_sql_format, PDO::PARAM_STR);
+                                $stmt->bindParam(':notes', $notes, PDO::PARAM_STR);
+                                $stmt->execute();
+                                $success = true;
+                                $submitted_data = []; // Clear submitted data on success
+                            }
+                        }
+                    } catch (PDOException $e) {
+                        $error = "Failed to book appointment: " . $e->getMessage();
+                    }
+                }
             }
-        } catch (PDOException $e) {
-            $_SESSION['flash_message'] = ['type' => 'danger', 'text' => 'Database error adding appointment.'];
-            // error_log("Add Appointment Insert Error: " . $e->getMessage());
+        } catch (Exception $e) {
+            $error = "Invalid date or time format provided.";
         }
     }
-    // Redirect back to the add form if validation failed or DB error occurred
-    header("Location: add_appointment.php");
-    exit;
 }
-
-// --- Handle form submission for adding a new patient (from modal) ---
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['new_patient_form'])) {
-    $first_name = filter_input(INPUT_POST, 'first_name', FILTER_SANITIZE_STRING);
-    $last_name = filter_input(INPUT_POST, 'last_name', FILTER_SANITIZE_STRING);
-    $contact_number = filter_input(INPUT_POST, 'contact_number', FILTER_SANITIZE_STRING);
-    $address = filter_input(INPUT_POST, 'address', FILTER_SANITIZE_STRING);
-
-    // Basic Validation
-    if (empty($first_name) || empty($last_name) || empty($contact_number)) {
-        $_SESSION['flash_message'] = ['type' => 'danger', 'text' => 'First Name, Last Name, and Contact Number are required for new patient.'];
-    } else {
-        try {
-            // Insert the new patient
-            $insert_patient_query = "
-                INSERT INTO patients (first_name, last_name, contact_number, address)
-                VALUES (:first_name, :last_name, :contact_number, :address)
-            ";
-            $stmt = $conn->prepare($insert_patient_query);
-            $stmt->bindParam(':first_name', $first_name, PDO::PARAM_STR);
-            $stmt->bindParam(':last_name', $last_name, PDO::PARAM_STR);
-            $stmt->bindParam(':contact_number', $contact_number, PDO::PARAM_STR);
-            $stmt->bindParam(':address', $address, PDO::PARAM_STR);
-
-            if ($stmt->execute()) {
-                $_SESSION['flash_message'] = ['type' => 'success', 'text' => 'New patient added successfully! Please select them from the list.'];
-                // No need to fetch patients again, just redirect
-            } else {
-                $_SESSION['flash_message'] = ['type' => 'danger', 'text' => 'Failed to add the new patient. Database error.'];
-            }
-        } catch (PDOException $e) {
-            $_SESSION['flash_message'] = ['type' => 'danger', 'text' => 'Database error adding patient.'];
-            // error_log("Add Patient (Modal) Insert Error: " . $e->getMessage());
-        }
-    }
-    // Redirect back to the add appointment page to show message and updated list
-    header("Location: add_appointment.php");
-    exit;
-}
-
-// --- Display Flash Message ---
-$flash_message = '';
-if (isset($_SESSION['flash_message'])) {
-    $flash_message = $_SESSION['flash_message'];
-    unset($_SESSION['flash_message']); // Clear message after displaying
-}
-
 ?>
 
-<!-- Page Title -->
-<div class="d-flex justify-content-between align-items-center mb-4">
-    <h2 class="m-0"><i class="fas fa-calendar-plus me-2 text-primary"></i> Add New Appointment</h2>
-    <a href="manage_appointments.php" class="btn btn-secondary"><i class="fas fa-arrow-left me-1"></i> Back to List</a>
-</div>
-
-<!-- Display Errors / Messages -->
-<?php if ($flash_message): ?>
-    <div class="alert alert-<?php echo htmlspecialchars($flash_message['type']); ?> alert-dismissible fade show"
-        role="alert">
-        <?php echo htmlspecialchars($flash_message['text']); ?>
-        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
-    </div>
-<?php endif; ?>
-<?php if ($error_message): // Show fetch error only if no flash message ?>
-    <div class="alert alert-danger"><?php echo $error_message; ?></div>
-<?php endif; ?>
-
-<!-- Add Appointment Form Card -->
-<div class="card shadow-sm">
-    <div class="card-header bg-light">
-        <h5 class="mb-0"><i class="fas fa-notes-medical me-2"></i> Appointment Details</h5>
-    </div>
-    <div class="card-body">
-        <form method="POST" action="add_appointment.php" id="addAppointmentForm">
-            <input type="hidden" name="appointment_form" value="1">
-
-            <div class="row">
-                <div class="col-md-6 mb-3">
-                    <label for="patient_id" class="form-label">Patient <span class="text-danger">*</span></label>
-                    <div class="input-group">
-                        <span class="input-group-text"><i class="fas fa-user"></i></span>
-                        <select name="patient_id" id="patient_id" class="form-select" required>
-                            <option value="" disabled selected>-- Select Patient --</option>
-                            <?php foreach ($patients as $patient): ?>
-                                <option value="<?php echo $patient['id']; ?>">
-                                    <?php echo htmlspecialchars($patient['full_name']); ?>
-                                </option>
-                            <?php endforeach; ?>
-                            <option value="new" class="text-primary fw-bold">-- Add New Patient --</option>
-                        </select>
-                    </div>
+<div class="container py-5">
+    <div class="row justify-content-center">
+        <div class="col-lg-8">
+            <div class="card shadow-lg border-0 glass-card">
+                <div class="card-header bg-gradient-primary text-white text-center py-4">
+                    <h2 class="mb-0 fw-bold"><i class="fas fa-calendar-plus me-2"></i>Book New Appointment</h2>
                 </div>
-                <div class="col-md-6 mb-3">
-                    <label for="doctor_id" class="form-label">Doctor <span class="text-danger">*</span></label>
-                    <div class="input-group">
-                        <span class="input-group-text"><i class="fas fa-user-md"></i></span>
-                        <select name="doctor_id" id="doctor_id" class="form-select" required>
-                            <option value="" disabled selected>-- Select Doctor --</option>
-                            <?php foreach ($doctors as $doctor): ?>
-                                <option value="<?php echo $doctor['id']; ?>">
-                                    <?php echo htmlspecialchars($doctor['name']); ?>
-                                </option>
-                            <?php endforeach; ?>
-                        </select>
-                    </div>
-                </div>
-            </div>
-
-            <div class="row">
-                <div class="col-md-6 mb-3">
-                    <label for="service_id" class="form-label">Service <span class="text-danger">*</span></label>
-                    <div class="input-group">
-                        <span class="input-group-text"><i class="fas fa-briefcase-medical"></i></span>
-                        <select name="service_id" id="service_id" class="form-select" required>
-                            <option value="" disabled selected>-- Select Service --</option>
-                            <?php foreach ($services as $service): ?>
-                                <option value="<?php echo $service['id']; ?>">
-                                    <?php echo htmlspecialchars($service['service_name']); ?>
-                                </option>
-                            <?php endforeach; ?>
-                        </select>
-                    </div>
-                </div>
-                <div class="col-md-6 mb-3">
-                    <label for="appointment_date" class="form-label">Appointment Date & Time <span
-                            class="text-danger">*</span></label>
-                    <div class="input-group">
-                        <span class="input-group-text"><i class="fas fa-calendar-alt"></i></span>
-                        <input type="datetime-local" name="appointment_date" id="appointment_date" class="form-control"
-                            required min="<?php echo date('Y-m-d\TH:i'); // Prevent booking in the past ?>">
-                    </div>
-                </div>
-            </div>
-
-            <div class="mb-3">
-                <label for="status" class="form-label">Status <span class="text-danger">*</span></label>
-                <div class="input-group">
-                    <span class="input-group-text"><i class="fas fa-check-circle"></i></span>
-                    <select name="status" id="status" class="form-select" required>
-                        <option value="pending" selected>Pending</option>
-                        <option value="completed">Completed</option>
-                        <option value="canceled">Canceled</option>
-                    </select>
-                </div>
-            </div>
-
-            <div class="mt-4 text-end">
-                <a href="manage_appointments.php" class="btn btn-secondary me-2"><i class="fas fa-times me-1"></i>
-                    Cancel</a>
-                <button type="submit" class="btn btn-primary"><i class="fas fa-save me-1"></i> Add Appointment</button>
-            </div>
-        </form>
-    </div> <!-- /card-body -->
-</div> <!-- /card -->
-
-
-<!-- Modal for Adding New Patient -->
-<div class="modal fade" id="newPatientModal" tabindex="-1" aria-labelledby="newPatientModalLabel" aria-hidden="true">
-    <div class="modal-dialog modal-dialog-centered">
-        <div class="modal-content">
-            <form method="POST" action="add_appointment.php" id="addPatientForm">
-                <input type="hidden" name="new_patient_form" value="1">
-                <div class="modal-header">
-                    <h5 class="modal-title" id="newPatientModalLabel"><i class="fas fa-user-plus me-2"></i> Add New
-                        Patient</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-                </div>
-                <div class="modal-body">
-                    <div class="row">
-                        <div class="col-md-6 mb-3">
-                            <label for="first_name" class="form-label">First Name <span
-                                    class="text-danger">*</span></label>
-                            <input type="text" name="first_name" id="first_name" class="form-control" required>
+                <div class="card-body p-5">
+                    <?php if ($success): ?>
+                        <div class="alert alert-success text-center fs-5">
+                            <i class="fas fa-check-circle me-2"></i>Appointment booked successfully!
                         </div>
-                        <div class="col-md-6 mb-3">
-                            <label for="last_name" class="form-label">Last Name <span
-                                    class="text-danger">*</span></label>
-                            <input type="text" name="last_name" id="last_name" class="form-control" required>
+                        <div class="text-center">
+                            <a href="manage_appointments.php" class="btn btn-outline-primary mt-3 px-4 py-2 fs-5">
+                                <i class="fas fa-arrow-left me-1"></i> Back to Appointments
+                            </a>
                         </div>
-                    </div>
-                    <div class="mb-3">
-                        <label for="contact_number" class="form-label">Contact Number <span
-                                class="text-danger">*</span></label>
-                        <input type="tel" name="contact_number" id="contact_number" class="form-control" required>
-                    </div>
-                    <div class="mb-3">
-                        <label for="address" class="form-label">Address</label>
-                        <textarea name="address" id="address" class="form-control" rows="2"></textarea>
-                    </div>
+                    <?php else: ?>
+                        <?php if ($error): ?>
+                            <div class="alert alert-danger text-center fs-5"><i
+                                    class="fas fa-exclamation-triangle me-2"></i><?= htmlspecialchars($error) ?></div>
+                        <?php endif; ?>
+                        <form method="POST" id="addAppointmentForm" autocomplete="off"
+                            action="<?php echo htmlspecialchars($_SERVER["PHP_SELF"]); ?>">
+                            <div class="row g-4 mb-4">
+                                <div class="col-md-6">
+                                    <label for="patient_id" class="form-label fw-semibold">Patient <span
+                                            class="text-danger">*</span></label>
+                                    <select class="form-select select2-ajax" id="patient_id" name="patient_id" required
+                                        style="width:100%;">
+                                        <?php if (!empty($submitted_data['patient_id']) && !empty($submitted_data['patient_id_text'])): ?>
+                                            <option value="<?php echo htmlspecialchars($submitted_data['patient_id']); ?>"
+                                                selected><?php echo htmlspecialchars($submitted_data['patient_id_text']); ?>
+                                            </option>
+                                        <?php else: ?>
+                                            <option value="">Search Patient...</option>
+                                        <?php endif; ?>
+                                        <option value="new">+ Add New Patient</option>
+                                    </select>
+                                    <input type="hidden" name="patient_id_text" id="patient_id_text"
+                                        value="<?php echo htmlspecialchars($submitted_data['patient_id_text'] ?? ''); ?>">
+                                    <div class="form-text">Type to search patients by name or contact.</div>
+                                </div>
+                                <div class="col-md-6">
+                                    <label for="doctor_id" class="form-label fw-semibold">Doctor <span
+                                            class="text-danger">*</span></label>
+                                    <select class="form-select select2" id="doctor_id" name="doctor_id" required>
+                                        <option value="">Select Doctor...</option>
+                                        <?php foreach ($doctors as $d): ?>
+                                            <option value="<?= $d['id'] ?>" <?php echo (isset($submitted_data['doctor_id']) && $submitted_data['doctor_id'] == $d['id']) ? 'selected' : ''; ?>>
+                                                <?= htmlspecialchars($d['name']) ?>
+                                            </option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="row g-4 mb-4">
+                                <div class="col-md-6">
+                                    <label for="service_id" class="form-label fw-semibold">Service <span
+                                            class="text-danger">*</span></label>
+                                    <select class="form-select select2" id="service_id" name="service_id" required>
+                                        <option value="">Select Service...</option>
+                                        <?php foreach ($services as $s): ?>
+                                            <option value="<?= $s['id'] ?>" <?php echo (isset($submitted_data['service_id']) && $submitted_data['service_id'] == $s['id']) ? 'selected' : ''; ?>>
+                                                <?= htmlspecialchars($s['service_name']) ?>
+                                                (<?= number_format($s['price'], 2) ?>$)
+                                            </option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                </div>
+                                <div class="col-md-3">
+                                    <label for="appointment_date" class="form-label fw-semibold">Date <span
+                                            class="text-danger">*</span></label>
+                                    <input type="date" class="form-control" id="appointment_date" name="appointment_date"
+                                        min="<?= date('Y-m-d') ?>" required
+                                        value="<?php echo htmlspecialchars($submitted_data['appointment_date'] ?? ''); ?>">
+                                </div>
+                                <div class="col-md-3">
+                                    <label for="appointment_time" class="form-label fw-semibold">Time <span
+                                            class="text-danger">*</span></label>
+                                    <input type="time" class="form-control" id="appointment_time" name="appointment_time"
+                                        required
+                                        value="<?php echo htmlspecialchars($submitted_data['appointment_time'] ?? ''); ?>"
+                                        step="900">
+                                    <small class="form-text text-muted">Clinic hours: 8 AM - 6 PM.</small>
+                                </div>
+                            </div>
+                            <div class="mb-4">
+                                <label for="notes" class="form-label fw-semibold">Notes</label>
+                                <textarea class="form-control" id="notes" name="notes" rows="2"
+                                    placeholder="Optional notes..."><?php echo htmlspecialchars($submitted_data['notes'] ?? ''); ?></textarea>
+                            </div>
+                            <div class="d-grid gap-2">
+                                <button type="submit" class="btn btn-gradient-success btn-lg shadow-lg fs-5">
+                                    <i class="fas fa-calendar-check me-2"></i>Book Appointment
+                                </button>
+                            </div>
+                        </form>
+                    <?php endif; ?>
                 </div>
-                <div class="modal-footer">
-                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal"><i
-                            class="fas fa-times me-1"></i> Cancel</button>
-                    <button type="submit" class="btn btn-primary"><i class="fas fa-user-plus me-1"></i> Add
-                        Patient</button>
-                </div>
-            </form>
+            </div>
         </div>
     </div>
 </div>
 
-<!-- Add JavaScript to handle the 'Add New Patient' option -->
+<!-- New Patient Modal -->
+<div class="modal fade" id="newPatientModal" tabindex="-1" aria-labelledby="newPatientModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <form class="modal-content glass-card" id="newPatientForm" autocomplete="off">
+            <div class="modal-header bg-gradient-primary text-white">
+                <h5 class="modal-title" id="newPatientModalLabel"><i class="fas fa-user-plus me-2"></i>Add New Patient
+                </h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"
+                    aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div id="newPatientError" class="alert alert-danger d-none"></div>
+                <div class="mb-3">
+                    <label for="np_first_name" class="form-label">First Name <span class="text-danger">*</span></label>
+                    <input type="text" class="form-control" id="np_first_name" name="first_name" required>
+                </div>
+                <div class="mb-3">
+                    <label for="np_last_name" class="form-label">Last Name <span class="text-danger">*</span></label>
+                    <input type="text" class="form-control" id="np_last_name" name="last_name" required>
+                </div>
+                <div class="mb-3">
+                    <label for="np_contact_number" class="form-label">Contact Number <span
+                            class="text-danger">*</span></label>
+                    <input type="text" class="form-control" id="np_contact_number" name="contact_number" required>
+                </div>
+                <div class="mb-3">
+                    <label for="np_address" class="form-label">Address</label>
+                    <input type="text" class="form-control" id="np_address" name="address">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="submit" class="btn btn-primary"><i class="fas fa-save me-1"></i>Save Patient</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Load jQuery before using it -->
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"
+    integrity="sha256-/JqT3SQfawRcv/BIHPThkBvs0OEvtFFmqPF/lYI/Cxo=" crossorigin="anonymous"></script>
+<link href="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css" rel="stylesheet" />
+<link href="https://cdn.jsdelivr.net/npm/select2-bootstrap-5-theme@1.3.0/dist/select2-bootstrap-5-theme.min.css"
+    rel="stylesheet" />
+<script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
+
 <script>
-    document.addEventListener('DOMContentLoaded', function () {
-        const patientSelect = document.getElementById('patient_id');
-        const newPatientModal = new bootstrap.Modal(document.getElementById('newPatientModal'));
-        const addAppointmentForm = document.getElementById('addAppointmentForm');
+    $(document).ready(function () {
+        $('.select2').select2({
+            theme: 'bootstrap-5',
+            width: '100%'
+        });
 
-        if (patientSelect) {
-            patientSelect.addEventListener('change', function () {
-                if (this.value === 'new') {
-                    // Open the modal
-                    newPatientModal.show();
-                    // Reset the select back to default to avoid submitting 'new'
-                    this.value = '';
+        $('#patient_id').select2({
+            theme: 'bootstrap-5',
+            width: '100%',
+            placeholder: 'Search Patient...',
+            ajax: {
+                url: '../ajax/search_patients.php',
+                dataType: 'json',
+                delay: 250,
+                data: function (params) {
+                    return { q: params.term };
+                },
+                processResults: function (data) {
+                    let results = data.results || [];
+                    results.push({ id: 'new', text: '+ Add New Patient' });
+                    return { results: results };
+                },
+                cache: true
+            },
+            minimumInputLength: 1
+        });
+
+        $('#patient_id').on('select2:select', function (e) {
+            var data = e.params.data;
+            $('#patient_id_text').val(data.text);
+            if (data.id === 'new') {
+                $('#newPatientModal').modal('show');
+                $('#patient_id').val(null).trigger('change');
+            }
+        });
+
+        $('#newPatientForm').on('submit', function (e) {
+            e.preventDefault();
+            $('#newPatientError').addClass('d-none').text('');
+            var formData = $(this).serialize();
+            $.post('../ajax/add_patient.php', formData, function (data) {
+                if (data.status === 'success') {
+                    var newOption = new Option(
+                        data.patient.last_name + ', ' + data.patient.first_name + ' (' + data.patient.contact_number + ')',
+                        data.patient.id,
+                        true, true
+                    );
+                    $('#patient_id').append(newOption).trigger('change');
+                    $('#newPatientModal').modal('hide');
+                    $('#newPatientForm')[0].reset();
+                } else {
+                    $('#newPatientError').removeClass('d-none').text(data.message || 'Failed to add patient.');
                 }
+            }, 'json').fail(function () {
+                $('#newPatientError').removeClass('d-none').text('Server error. Please try again.');
             });
-        }
-
-        // Optional: Prevent main form submission if modal is open (though separate forms handle this)
-        // addAppointmentForm.addEventListener('submit', function(event) {
-        //     if (document.getElementById('newPatientModal').classList.contains('show')) {
-        //         event.preventDefault();
-        //         alert('Please close the "Add New Patient" window first.');
-        //     }
-        // });
+        });
     });
 </script>
 
-<?php
-include '../includes/footer.php'; // Include the shared footer
-?>
+<style>
+    body {
+        background: linear-gradient(135deg, #e0eafc 0%, #cfdef3 100%);
+        min-height: 100vh;
+    }
+
+    .glass-card {
+        background: rgba(255, 255, 255, 0.85);
+        backdrop-filter: blur(8px);
+        border-radius: 1.5rem;
+        box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.15);
+    }
+
+    .bg-gradient-primary {
+        background: linear-gradient(90deg, #2575b8 0%, #6a11cb 100%) !important;
+    }
+
+    .btn-gradient-success {
+        background: linear-gradient(90deg, #43cea2 0%, #185a9d 100%);
+        color: #fff;
+        border: none;
+        transition: background 0.3s;
+    }
+
+    .btn-gradient-success:hover,
+    .btn-gradient-success:focus {
+        background: linear-gradient(90deg, #185a9d 0%, #43cea2 100%);
+        color: #fff;
+    }
+
+    .select2-container--bootstrap-5 .select2-selection {
+        border-radius: 0.75rem;
+        min-height: 2.7rem;
+        font-size: 1.1rem;
+    }
+
+    .modal-content {
+        border-radius: 1.25rem;
+        background: rgba(255, 255, 255, 0.95);
+        box-shadow: 0 4px 24px 0 rgba(106, 17, 203, 0.10);
+    }
+
+    .form-label {
+        font-weight: 600;
+        color: #185a9d;
+    }
+
+    input,
+    textarea,
+    select {
+        font-size: 1.08rem !important;
+    }
+</style>
+
+<?php include '../includes/footer.php'; ?>

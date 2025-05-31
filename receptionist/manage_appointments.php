@@ -1,22 +1,9 @@
 <?php
-// Define page title *before* including header
-$page_title = 'Manage Appointments';
-include '../includes/header.php'; // Include the shared header with the sidebar
 
-// Check if the user is actually a receptionist
-if ($_SESSION['role'] !== 'receptionist') {
-    echo '<div class="alert alert-danger m-3">Access Denied. You do not have permission to view this page.</div>';
-    include '../includes/footer.php';
-    exit;
-}
 
-$flash_message = '';
-if (isset($_SESSION['flash_message'])) {
-    $flash_message = $_SESSION['flash_message'];
-    unset($_SESSION['flash_message']); // Clear message after displaying
-}
+include '../config/db.php'; // Include database connection early if needed by POST handling
 
-// Handle appointment deletion
+// Handle appointment deletion FIRST, before any HTML output
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['delete_id'])) {
     $delete_id = intval($_POST['delete_id']);
     try {
@@ -33,7 +20,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['delete_id'])) {
         // error_log("Delete Appointment Error: " . $e->getMessage());
     }
     header("Location: manage_appointments.php"); // Redirect to refresh and show message
+    exit; // IMPORTANT: Stop script execution after redirect
+}
+
+// Define page title *before* including header
+$page_title = 'Manage Appointments';
+include '../includes/header.php'; // Include the shared header with the sidebar
+
+// Check if the user is actually a receptionist (session is already started by header.php or above)
+if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'receptionist') {
+    echo '<div class="alert alert-danger m-3">Access Denied. You do not have permission to view this page.</div>';
+    include '../includes/footer.php';
     exit;
+}
+
+$flash_message_display = null; // Use a different variable name to avoid confusion
+if (isset($_SESSION['flash_message'])) {
+    $flash_message_display = $_SESSION['flash_message'];
+    unset($_SESSION['flash_message']); // Clear message after preparing it for display
 }
 
 // Filtering
@@ -46,7 +50,11 @@ $appointments = [];
 $doctors = []; // For filter dropdown
 try {
     // Fetch doctors for the filter dropdown
-    $doctors = $conn->query("SELECT id, name FROM users WHERE role = 'doctor' ORDER BY name")->fetchAll(PDO::FETCH_ASSOC);
+    $doctors_query = $conn->query("SELECT id, name FROM users WHERE role = 'doctor' ORDER BY name");
+    if ($doctors_query) {
+        $doctors = $doctors_query->fetchAll(PDO::FETCH_ASSOC);
+    }
+
 
     $query = "
         SELECT
@@ -74,12 +82,20 @@ try {
     // Add doctor filter if provided
     if (!empty($filter_doctor)) {
         $query .= " AND a.doctor_id = :doctor_id";
-        $params[':doctor_id'] = $filter_doctor;
+        $params[':doctor_id'] = (int) $filter_doctor; // Ensure it's an integer
     }
     // Add date filter if provided
     if (!empty($filter_date)) {
-        $query .= " AND DATE(a.appointment_date) = :app_date";
-        $params[':app_date'] = $filter_date;
+        // Validate date format
+        $date_obj = DateTime::createFromFormat('Y-m-d', $filter_date);
+        if ($date_obj && $date_obj->format('Y-m-d') === $filter_date) {
+            $query .= " AND DATE(a.appointment_date) = :app_date";
+            $params[':app_date'] = $filter_date;
+        } else {
+            // Invalid date, perhaps set a message or ignore
+            if ($flash_message_display === null)
+                $flash_message_display = ['type' => 'warning', 'text' => 'Invalid date format for filter.'];
+        }
     }
 
 
@@ -90,7 +106,8 @@ try {
     $appointments = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 } catch (PDOException $e) {
-    $flash_message = ['type' => 'danger', 'text' => 'Error fetching data: ' . $e->getMessage()];
+    if ($flash_message_display === null)
+        $flash_message_display = ['type' => 'danger', 'text' => 'Error fetching data: ' . $e->getMessage()];
     // error_log("Manage Appointments Fetch Error: " . $e->getMessage());
 }
 
@@ -117,10 +134,10 @@ function getStatusBadgeClass($status)
 </div>
 
 <!-- Display Flash Message -->
-<?php if ($flash_message): ?>
-    <div class="alert alert-<?php echo htmlspecialchars($flash_message['type']); ?> alert-dismissible fade show"
-        role="alert">
-        <?php echo htmlspecialchars($flash_message['text']); ?>
+<?php if ($flash_message_display): ?>
+    <div class="alert alert-<?php echo htmlspecialchars($flash_message_display['type']); ?> alert-dismissible fade show"
+        role="alert" data-auto-dismiss="7000">
+        <?php echo htmlspecialchars($flash_message_display['text']); ?>
         <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
     </div>
 <?php endif; ?>
@@ -131,7 +148,7 @@ function getStatusBadgeClass($status)
         <h5 class="mb-0 d-flex justify-content-between align-items-center">
             <span><i class="fas fa-list me-2"></i> Appointments List</span>
             <!-- Filter Form -->
-            <form method="GET" action="" class="d-inline-flex align-items-center ms-auto">
+            <form method="GET" action="manage_appointments.php" class="d-inline-flex align-items-center ms-auto">
                 <input type="date" name="date" class="form-control form-control-sm me-2"
                     value="<?php echo htmlspecialchars($filter_date); ?>" title="Filter by Date">
                 <select name="doctor_id" class="form-select form-select-sm me-2" title="Filter by Doctor">
@@ -163,7 +180,7 @@ function getStatusBadgeClass($status)
             <table class="table table-striped table-hover align-middle">
                 <thead class="table-light text-center">
                     <tr>
-                        <th>ID</th>
+                        <!-- ID column removed -->
                         <th>Patient</th>
                         <th>Doctor</th>
                         <th>Service</th>
@@ -175,14 +192,15 @@ function getStatusBadgeClass($status)
                 <tbody class="text-center">
                     <?php if (empty($appointments)): ?>
                         <tr>
-                            <td colspan="7" class="text-center text-muted">No appointments found matching the criteria.</td>
+                            <td colspan="6" class="text-center text-muted">No appointments found matching the criteria.</td>
+                            <!-- Changed colspan from 7 to 6 -->
                         </tr>
                     <?php else: ?>
                         <?php foreach ($appointments as $appointment): ?>
                             <tr>
-                                <td><?php echo htmlspecialchars($appointment['appointment_id']); ?></td>
+                                <!-- ID column removed -->
                                 <td class="text-start">
-                                    <a href="client_details.php?patient_id=<?php echo $appointment['patient_id']; ?>"
+                                    <a href="client_details.php?client_id=<?php echo $appointment['patient_id']; ?>"
                                         title="View Patient Details">
                                         <?php echo htmlspecialchars($appointment['patient_name']); ?>
                                     </a>
@@ -207,7 +225,7 @@ function getStatusBadgeClass($status)
                                             <i class="fas fa-edit"></i>
                                         </a>
                                         <form method="POST" action="manage_appointments.php" class="d-inline"
-                                            onsubmit="return confirm('Are you sure you want to delete appointment #<?php echo $appointment['appointment_id']; ?>?');">
+                                            onsubmit="return confirm('Are you sure you want to delete appointment #<?php echo $appointment['appointment_id']; ?> for <?php echo htmlspecialchars(addslashes($appointment['patient_name'])); ?>?');">
                                             <input type="hidden" name="delete_id"
                                                 value="<?php echo $appointment['appointment_id']; ?>">
                                             <button type="submit" class="btn btn-outline-danger btn-sm" data-bs-toggle="tooltip"

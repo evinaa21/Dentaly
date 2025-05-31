@@ -3,14 +3,12 @@
 $page_title = 'Client Search & History';
 include '../includes/header.php'; // Include the shared header with the sidebar
 
-// Check if the user is actually a receptionist
-if ($_SESSION['role'] !== 'receptionist') {
+// Check if the user has permission (receptionist can access this)
+if (!isset($_SESSION['role']) || !in_array($_SESSION['role'], ['admin', 'receptionist'])) {
     echo '<div class="alert alert-danger m-3">Access Denied. You do not have permission to view this page.</div>';
     include '../includes/footer.php';
     exit;
 }
-
-// No initial data loading needed, handled by AJAX
 ?>
 
 <!-- Page Title -->
@@ -47,7 +45,7 @@ if ($_SESSION['role'] !== 'receptionist') {
             </div>
         </div>
     </div>
-    <div class="card-body p-0"> <!-- Remove padding for list group -->
+    <div class="card-body p-0">
         <div id="resultsList" class="list-group list-group-flush">
             <!-- Initial message -->
             <div class="list-group-item text-center text-muted" id="initialMessage">
@@ -75,9 +73,9 @@ if ($_SESSION['role'] !== 'receptionist') {
             resultsList.innerHTML = '';
             if (initialMessage) initialMessage.style.display = 'none';
 
-            if (query.length < 2) { // Only search if query is at least 2 chars
+            if (query.length < 2) {
                 if (query.length === 0 && initialMessage) {
-                    initialMessage.style.display = 'block'; // Show initial message if empty
+                    initialMessage.style.display = 'block';
                     resultsList.appendChild(initialMessage);
                 } else if (query.length > 0) {
                     resultsList.innerHTML = '<div class="list-group-item text-center text-muted">Please enter at least 2 characters.</div>';
@@ -86,9 +84,8 @@ if ($_SESSION['role'] !== 'receptionist') {
                 return;
             }
 
-            loadingSpinner.style.display = 'inline-block'; // Show spinner
+            loadingSpinner.style.display = 'inline-block';
 
-            // Use the dedicated search script
             fetch(`search_clients.php?query=${encodeURIComponent(query)}`)
                 .then(response => {
                     if (!response.ok) {
@@ -97,11 +94,11 @@ if ($_SESSION['role'] !== 'receptionist') {
                     return response.json();
                 })
                 .then(clients => {
-                    loadingSpinner.style.display = 'none'; // Hide spinner
+                    loadingSpinner.style.display = 'none';
                     if (clients.length > 0) {
                         clients.forEach(client => {
                             const item = document.createElement('a');
-                            item.href = `client_details.php?client_id=${client.id}`; // Correct parameter name
+                            item.href = `client_details.php?client_id=${client.id}`;
                             item.className = 'list-group-item list-group-item-action d-flex justify-content-between align-items-center';
 
                             const nameSpan = document.createElement('span');
@@ -128,35 +125,34 @@ if ($_SESSION['role'] !== 'receptionist') {
                     }
                 })
                 .catch(error => {
-                    loadingSpinner.style.display = 'none'; // Hide spinner
+                    loadingSpinner.style.display = 'none';
                     console.error('Search Error:', error);
                     resultsList.innerHTML = '<div class="list-group-item text-center text-danger">An error occurred during the search. Please try again.</div>';
                 });
         }
 
-        // Function to highlight search terms (simple version)
+        // Function to highlight search terms
         function highlightSearchTerm(text, term) {
             if (!text) return '';
             const terms = term.split(' ').filter(t => t.length > 0);
             let highlightedText = text;
             terms.forEach(t => {
-                const regex = new RegExp(`(${t.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&')})`, 'gi'); // Escape special chars
+                const regex = new RegExp(`(${t.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&')})`, 'gi');
                 highlightedText = highlightedText.replace(regex, '<strong class="text-primary">$1</strong>');
             });
             return highlightedText;
         }
 
-
         searchInput.addEventListener('input', function () {
             clearTimeout(searchTimeout);
-            searchTimeout = setTimeout(performSearch, 300); // Debounce: wait 300ms after typing stops
+            searchTimeout = setTimeout(performSearch, 300);
         });
 
         clearSearchBtn.addEventListener('click', function () {
             searchInput.value = '';
-            resultsList.innerHTML = ''; // Clear results
+            resultsList.innerHTML = '';
             if (initialMessage) {
-                initialMessage.style.display = 'block'; // Show initial message
+                initialMessage.style.display = 'block';
                 resultsList.appendChild(initialMessage);
             }
             loadingSpinner.style.display = 'none';
@@ -165,6 +161,4 @@ if ($_SESSION['role'] !== 'receptionist') {
     });
 </script>
 
-<?php
-include '../includes/footer.php'; // Include the shared footer
-?>
+<?php include '../includes/footer.php'; ?>

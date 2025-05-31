@@ -1,435 +1,555 @@
 <?php
-// Define page title *before* including header
-// We'll set a more specific title after fetching the client name
-$page_title = 'Client Details';
-include '../includes/header.php'; // Include the shared header with the sidebar
+// filepath: c:\xampp\htdocs\Dentaly\receptionist\client_details.php
+include '../config/db.php'; // Include database connection
 
-// Check if the user is actually a receptionist
-if ($_SESSION['role'] !== 'receptionist') {
+// Define page title *before* including header
+$page_title = 'Client Details'; // Default title
+include '../includes/header.php';
+
+// Check if the user has permission
+if (!isset($_SESSION['role']) || !in_array($_SESSION['role'], ['admin', 'receptionist', 'doctor'])) { // Adjust roles as needed
     echo '<div class="alert alert-danger m-3">Access Denied. You do not have permission to view this page.</div>';
     include '../includes/footer.php';
     exit;
 }
 
-if (!isset($_GET['client_id']) || empty($_GET['client_id'])) {
-    $_SESSION['flash_message'] = ['type' => 'danger', 'text' => 'Invalid client ID provided.'];
-    header("Location: client_history.php"); // Redirect back to search
-    exit;
-}
-
-$client_id = intval($_GET['client_id']);
+$client_id = null;
 $client = null;
 $appointments = [];
 $teeth_graphs = [];
 $total_spent = 0;
-$error_message = '';
+$message = '';
+$message_class = 'alert-info';
 
-// --- Fetch Client Data ---
-try {
-    // Fetch Client Details
-    $query = "SELECT * FROM patients WHERE id = :client_id";
-    $stmt = $conn->prepare($query);
-    $stmt->bindParam(':client_id', $client_id, PDO::PARAM_INT);
-    $stmt->execute();
-    $client = $stmt->fetch(PDO::FETCH_ASSOC);
+if (!isset($_GET['client_id']) || !($client_id = filter_input(INPUT_GET, 'client_id', FILTER_VALIDATE_INT))) {
+    $message = "Invalid or missing client ID.";
+    $message_class = 'alert-danger';
+} else {
+    try {
+        // Fetch Client Details
+        $query = "SELECT p.*, u.email FROM patients p LEFT JOIN users u ON p.user_id = u.id WHERE p.id = :client_id"; // Fetch email if linked
+        $stmt = $conn->prepare($query);
+        $stmt->bindParam(':client_id', $client_id, PDO::PARAM_INT);
+        $stmt->execute();
+        $client = $stmt->fetch(PDO::FETCH_ASSOC);
 
-    if ($client) {
-        // Set a more specific page title
-        $page_title = 'Details for ' . htmlspecialchars($client['first_name'] . ' ' . $client['last_name']);
+        if ($client) {
+            $page_title = "Details for " . htmlspecialchars($client['first_name'] . ' ' . $client['last_name']); // Set dynamic title
 
-        // Fetch Appointment History
-        $query_app = "
-            SELECT
-                a.id AS appointment_id,
-                a.appointment_date,
-                a.status,
-                d.name AS doctor_name,
-                s.service_name,
-                s.price AS service_price
-            FROM appointments a
-            JOIN users d ON a.doctor_id = d.id
-            JOIN services s ON a.service_id = s.id
-            WHERE a.patient_id = :client_id
-            ORDER BY a.appointment_date DESC;
-        ";
-        $stmt_app = $conn->prepare($query_app);
-        $stmt_app->bindParam(':client_id', $client_id, PDO::PARAM_INT);
-        $stmt_app->execute();
-        $appointments = $stmt_app->fetchAll(PDO::FETCH_ASSOC);
+            // Fetch Appointment History
+            $query_app = "
+                SELECT
+                    a.id AS appointment_id, a.appointment_date, a.status,
+                    d.name AS doctor_name, s.service_name, s.price AS service_price
+                FROM appointments a
+                JOIN users d ON a.doctor_id = d.id
+                JOIN services s ON a.service_id = s.id
+                WHERE a.patient_id = :client_id
+                ORDER BY a.appointment_date DESC;
+            ";
+            $stmt_app = $conn->prepare($query_app);
+            $stmt_app->bindParam(':client_id', $client_id, PDO::PARAM_INT);
+            $stmt_app->execute();
+            $appointments = $stmt_app->fetchAll(PDO::FETCH_ASSOC);
 
-        // Fetch Teeth Graphs
-        $query_graph = "SELECT * FROM teeth_graph WHERE patient_id = :client_id ORDER BY created_at DESC";
-        $stmt_graph = $conn->prepare($query_graph);
-        $stmt_graph->bindParam(':client_id', $client_id, PDO::PARAM_INT);
-        $stmt_graph->execute();
-        $teeth_graphs = $stmt_graph->fetchAll(PDO::FETCH_ASSOC);
+            // Fetch Teeth Graphs
+            $query_graph = "SELECT * FROM teeth_graph WHERE patient_id = :client_id ORDER BY created_at DESC";
+            $stmt_graph = $conn->prepare($query_graph);
+            $stmt_graph->bindParam(':client_id', $client_id, PDO::PARAM_INT);
+            $stmt_graph->execute();
+            $teeth_graphs = $stmt_graph->fetchAll(PDO::FETCH_ASSOC);
 
-        // Calculate Total Money Spent (only on completed appointments)
-        $query_spent = "
-            SELECT SUM(s.price) AS total_spent
-            FROM appointments a
-            JOIN services s ON a.service_id = s.id
-            WHERE a.patient_id = :client_id AND a.status = 'completed';
-        ";
-        $stmt_spent = $conn->prepare($query_spent);
-        $stmt_spent->bindParam(':client_id', $client_id, PDO::PARAM_INT);
-        $stmt_spent->execute();
-        $total_spent_result = $stmt_spent->fetch(PDO::FETCH_ASSOC);
-        $total_spent = $total_spent_result ? $total_spent_result['total_spent'] : 0; // Handle null case
+            // Calculate Total Money Spent (only completed appointments)
+            $query_spent = "
+                SELECT SUM(s.price) AS total_spent
+                FROM appointments a JOIN services s ON a.service_id = s.id
+                WHERE a.patient_id = :client_id AND a.status = 'completed';
+            ";
+            $stmt_spent = $conn->prepare($query_spent);
+            $stmt_spent->bindParam(':client_id', $client_id, PDO::PARAM_INT);
+            $stmt_spent->execute();
+            $total_spent_result = $stmt_spent->fetch(PDO::FETCH_ASSOC);
+            $total_spent = $total_spent_result ? $total_spent_result['total_spent'] : 0;
 
-    } else {
-        $_SESSION['flash_message'] = ['type' => 'warning', 'text' => 'Client with the specified ID was not found.'];
-        header("Location: client_history.php"); // Redirect back to search
-        exit;
-    }
-} catch (PDOException $e) {
-    $error_message = "Database Error: Failed to fetch client data.";
-    // error_log("Client Details Fetch Error: " . $e->getMessage());
-    // Don't redirect here, show error on the page
-}
-
-
-// --- Handle New Graph Upload ---
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['upload_graph'])) {
-    $description = $_POST['description'] ?? 'N/A';
-    $image = $_FILES['image'] ?? null;
-
-    if ($image && $image['error'] === UPLOAD_ERR_OK) {
-        // Ensure the upload directory exists
-        $upload_dir = '../uploads/teeth_graphs/';
-        if (!is_dir($upload_dir)) {
-            if (!mkdir($upload_dir, 0775, true)) { // Use 0775 for better security
-                $_SESSION['flash_message'] = ['type' => 'danger', 'text' => 'Failed to create upload directory. Check permissions.'];
-                header("Location: client_details.php?client_id=$client_id");
-                exit;
-            }
-        }
-
-        // Generate a unique file name
-        $file_extension = pathinfo($image['name'], PATHINFO_EXTENSION);
-        $safe_filename = preg_replace('/[^A-Za-z0-9_\-]/', '_', pathinfo($image['name'], PATHINFO_FILENAME)); // Sanitize filename
-        $file_name = uniqid($client_id . '_', true) . '_' . $safe_filename . '.' . $file_extension;
-        $file_path = $upload_dir . $file_name;
-        $relative_path = '../uploads/teeth_graphs/' . $file_name; // Path to store in DB
-
-        // Validate file type (basic check)
-        $allowed_types = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
-        if (!in_array($image['type'], $allowed_types)) {
-            $_SESSION['flash_message'] = ['type' => 'danger', 'text' => 'Invalid file type. Only JPG, PNG, GIF, WEBP allowed.'];
-        }
-        // Validate file size (e.g., max 5MB)
-        elseif ($image['size'] > 5 * 1024 * 1024) {
-            $_SESSION['flash_message'] = ['type' => 'danger', 'text' => 'File is too large. Maximum size is 5MB.'];
-        }
-        // Move the uploaded file
-        elseif (move_uploaded_file($image['tmp_name'], $file_path)) {
-            try {
-                $query_insert_graph = "INSERT INTO teeth_graph (patient_id, image_url, description) VALUES (:patient_id, :image_url, :description)";
-                $stmt_insert_graph = $conn->prepare($query_insert_graph);
-                $stmt_insert_graph->bindParam(':patient_id', $client_id, PDO::PARAM_INT);
-                $stmt_insert_graph->bindParam(':image_url', $relative_path, PDO::PARAM_STR); // Store relative path
-                $stmt_insert_graph->bindParam(':description', $description, PDO::PARAM_STR);
-
-                if ($stmt_insert_graph->execute()) {
-                    $_SESSION['flash_message'] = ['type' => 'success', 'text' => 'Teeth graph uploaded successfully!'];
-                } else {
-                    $_SESSION['flash_message'] = ['type' => 'danger', 'text' => 'Failed to save graph details to database.'];
-                    unlink($file_path); // Delete the uploaded file if DB insert fails
-                }
-            } catch (PDOException $e) {
-                $_SESSION['flash_message'] = ['type' => 'danger', 'text' => 'Database error saving graph.'];
-                // error_log("Graph Upload DB Error: " . $e->getMessage());
-                unlink($file_path); // Delete the uploaded file if DB insert fails
-            }
         } else {
-            $_SESSION['flash_message'] = ['type' => 'danger', 'text' => 'Failed to move uploaded file. Check server permissions.'];
+            $message = "Client with ID $client_id not found.";
+            $message_class = 'alert-warning';
+            $client = null; // Ensure client is null
         }
-    } elseif ($image && $image['error'] !== UPLOAD_ERR_NO_FILE) {
-        $_SESSION['flash_message'] = ['type' => 'danger', 'text' => 'Error uploading file. Code: ' . $image['error']];
-    } else {
-        $_SESSION['flash_message'] = ['type' => 'danger', 'text' => 'No file selected or invalid upload data.'];
+
+    } catch (PDOException $e) {
+        $message = "Database error fetching client details: " . $e->getMessage();
+        $message_class = 'alert-danger';
+        $client = null; // Ensure client is null on error
+        // error_log("Client Details Fetch Error: " . $e->getMessage()); // Log error
     }
-    header("Location: client_details.php?client_id=$client_id"); // Redirect to show message
-    exit;
 }
 
-// --- Handle Graph Deletion ---
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['delete_graph'])) {
-    $graph_id = filter_input(INPUT_POST, 'graph_id', FILTER_VALIDATE_INT);
-    $image_url_relative = $_POST['image_url'] ?? null; // The relative path stored in DB
+// === POST Request Handling ===
+if ($client && $_SERVER['REQUEST_METHOD'] === 'POST') {
+    try {
+        // Handle New Graph Upload
+        if (isset($_POST['upload_graph'])) {
+            $description = $_POST['description'] ?? 'N/A';
+            $image = $_FILES['image'] ?? null;
 
-    if ($graph_id && $image_url_relative) {
-        try {
-            // Delete the graph record from the database
-            $query_delete_graph = "DELETE FROM teeth_graph WHERE id = :graph_id AND patient_id = :patient_id"; // Add patient_id check for security
-            $stmt_delete_graph = $conn->prepare($query_delete_graph);
-            $stmt_delete_graph->bindParam(':graph_id', $graph_id, PDO::PARAM_INT);
-            $stmt_delete_graph->bindParam(':patient_id', $client_id, PDO::PARAM_INT);
+            // Basic validation
+            if (!$image || $image['error'] !== UPLOAD_ERR_OK || $image['size'] == 0) {
+                $message = "Invalid input. Please provide a description and select a valid image file.";
+                $message_class = 'alert-danger';
+            } else {
+                // Validate image type (example)
+                $allowed_types = ['image/jpeg', 'image/png', 'image/gif', 'image/webp']; // Added webp
+                $max_file_size = 5 * 1024 * 1024; // 5MB
 
-            if ($stmt_delete_graph->execute() && $stmt_delete_graph->rowCount() > 0) {
-                // Construct the absolute path to the file
-                $image_path_absolute = realpath(__DIR__ . '/' . $image_url_relative); // Assumes image_url is relative to this script's dir
+                if (!in_array($image['type'], $allowed_types)) {
+                    $message = "Invalid file type. Only JPG, PNG, GIF, and WEBP are allowed.";
+                } elseif ($image['size'] > $max_file_size) {
+                    $message = "File is too large. Maximum size is 5MB.";
+                    $message_class = 'alert-danger';
+                } else {
+                    $upload_dir = '../uploads/teeth_graphs/';
+                    if (!is_dir($upload_dir)) {
+                        if (!mkdir($upload_dir, 0775, true)) { // Use 0775 for better security
+                            throw new Exception("Failed to create upload directory.");
+                        }
+                    }
 
-                // Delete the image file from the server if it exists
-                if ($image_path_absolute && file_exists($image_path_absolute)) {
-                    if (unlink($image_path_absolute)) {
-                        $_SESSION['flash_message'] = ['type' => 'success', 'text' => 'Teeth graph deleted successfully!'];
+                    // Sanitize filename and create a unique name
+                    $original_filename = basename($image['name']);
+                    $safe_filename = preg_replace("/[^a-zA-Z0-9._-]/", "", $original_filename); // Remove special chars
+                    $file_extension = strtolower(pathinfo($safe_filename, PATHINFO_EXTENSION));
+                    if (!in_array($file_extension, ['jpg', 'jpeg', 'png', 'gif', 'webp'])) { // Double check extension
+                        $message = "Invalid file extension after sanitization.";
+                        $message_class = 'alert-danger';
                     } else {
-                        // DB record deleted, but file deletion failed. Log this.
-                        $_SESSION['flash_message'] = ['type' => 'warning', 'text' => 'Graph record deleted, but failed to delete the image file. Please check server permissions.'];
-                        // error_log("Failed to delete graph file: " . $image_path_absolute);
+                        $unique_file_name = "graph_" . $client_id . "_" . uniqid() . "_" . time() . "." . $file_extension;
+                        $file_path = $upload_dir . $unique_file_name;
+                        $relative_path = 'uploads/teeth_graphs/' . $unique_file_name; // Path to store in DB
+
+                        if (move_uploaded_file($image['tmp_name'], $file_path)) {
+                            $query = "INSERT INTO teeth_graph (patient_id, image_url, description) VALUES (:patient_id, :image_url, :description)";
+                            $stmt = $conn->prepare($query);
+                            $stmt->bindParam(':patient_id', $client_id, PDO::PARAM_INT);
+                            $stmt->bindParam(':image_url', $relative_path, PDO::PARAM_STR); // Store relative path
+                            $stmt->bindParam(':description', $description, PDO::PARAM_STR);
+
+                            if ($stmt->execute()) {
+                                $message = "Teeth graph uploaded successfully!";
+                                $message_class = 'alert-success';
+                                // Refresh graph list
+                                $stmt_graph->execute();
+                                $teeth_graphs = $stmt_graph->fetchAll(PDO::FETCH_ASSOC);
+                            } else {
+                                $message = "Failed to save graph information to database.";
+                                $message_class = 'alert-danger';
+                                if (file_exists($file_path))
+                                    unlink($file_path); // Clean up uploaded file if DB insert fails
+                            }
+                        } else {
+                            $message = "Failed to move uploaded file. Check permissions.";
+                            $message_class = 'alert-danger';
+                        }
+                    }
+                }
+            }
+        }
+
+        // Handle Graph Deletion
+        elseif (isset($_POST['delete_graph'])) {
+            $graph_id = filter_input(INPUT_POST, 'graph_id', FILTER_VALIDATE_INT);
+            // Fetch image_url from DB to ensure correct file is deleted
+            $fetch_graph_stmt = $conn->prepare("SELECT image_url FROM teeth_graph WHERE id = :graph_id AND patient_id = :patient_id");
+            $fetch_graph_stmt->bindParam(':graph_id', $graph_id, PDO::PARAM_INT);
+            $fetch_graph_stmt->bindParam(':patient_id', $client_id, PDO::PARAM_INT);
+            $fetch_graph_stmt->execute();
+            $graph_data = $fetch_graph_stmt->fetch(PDO::FETCH_ASSOC);
+
+            if (!$graph_id || !$graph_data) {
+                $message = "Invalid graph ID or graph not found for this patient.";
+                $message_class = 'alert-danger';
+            } else {
+                $query = "DELETE FROM teeth_graph WHERE id = :graph_id AND patient_id = :patient_id"; // Ensure it belongs to this patient
+                $stmt = $conn->prepare($query);
+                $stmt->bindParam(':graph_id', $graph_id, PDO::PARAM_INT);
+                $stmt->bindParam(':patient_id', $client_id, PDO::PARAM_INT);
+
+                if ($stmt->execute()) {
+                    if ($stmt->rowCount() > 0) { // Check if a row was actually deleted
+                        $message = "Graph deleted successfully!";
+                        $message_class = 'alert-success';
+                        // Attempt to delete the image file
+                        if (!empty($graph_data['image_url'])) {
+                            $image_path_absolute = '../' . $graph_data['image_url'];
+                            if (file_exists($image_path_absolute)) {
+                                if (!unlink($image_path_absolute)) {
+                                    $message .= " (Warning: Failed to delete image file from server.)";
+                                    $message_class = 'alert-warning';
+                                }
+                            }
+                        }
+                        // Refresh graph list
+                        $stmt_graph->execute();
+                        $teeth_graphs = $stmt_graph->fetchAll(PDO::FETCH_ASSOC);
+                    } else {
+                        $message = "Graph not found or already deleted.";
+                        $message_class = 'alert-warning';
                     }
                 } else {
-                    $_SESSION['flash_message'] = ['type' => 'success', 'text' => 'Graph record deleted. Image file not found or path incorrect.'];
-                    // error_log("Graph file not found for deletion: " . $image_url_relative);
+                    $message = "Failed to delete graph from database.";
+                    $message_class = 'alert-danger';
                 }
-            } else {
-                $_SESSION['flash_message'] = ['type' => 'danger', 'text' => 'Failed to delete the graph record from the database or graph not found.'];
             }
-        } catch (PDOException $e) {
-            $_SESSION['flash_message'] = ['type' => 'danger', 'text' => 'Database error deleting graph.'];
-            // error_log("Graph Deletion DB Error: " . $e->getMessage());
         }
-    } else {
-        $_SESSION['flash_message'] = ['type' => 'danger', 'text' => 'Invalid data provided for graph deletion.'];
+
+        // Handle Client Deletion (Requires Admin Role) - but receptionist can't delete
+        elseif (isset($_POST['delete_client']) && $_SESSION['role'] === 'admin') {
+            if ($client['user_id'] == $_SESSION['user_id']) {
+                $message = "Admins cannot delete their own linked patient record through this interface.";
+                $message_class = 'alert-danger';
+            } else {
+                $conn->beginTransaction();
+
+                // 1. Delete teeth graphs files first
+                $query_get_graphs = "SELECT image_url FROM teeth_graph WHERE patient_id = :client_id";
+                $stmt_get_graphs = $conn->prepare($query_get_graphs);
+                $stmt_get_graphs->bindParam(':client_id', $client_id, PDO::PARAM_INT);
+                $stmt_get_graphs->execute();
+                $graph_files = $stmt_get_graphs->fetchAll(PDO::FETCH_ASSOC);
+                foreach ($graph_files as $graph_file) {
+                    $file_to_delete = '../' . $graph_file['image_url'];
+                    if (!empty($graph_file['image_url']) && file_exists($file_to_delete)) {
+                        unlink($file_to_delete);
+                    }
+                }
+
+                // 2. Delete teeth graph records
+                $query_del_graphs = "DELETE FROM teeth_graph WHERE patient_id = :client_id";
+                $stmt_del_graphs = $conn->prepare($query_del_graphs);
+                $stmt_del_graphs->bindParam(':client_id', $client_id, PDO::PARAM_INT);
+                $stmt_del_graphs->execute();
+
+                // 3. Delete appointments
+                $query_del_app = "DELETE FROM appointments WHERE patient_id = :client_id";
+                $stmt_del_app = $conn->prepare($query_del_app);
+                $stmt_del_app->bindParam(':client_id', $client_id, PDO::PARAM_INT);
+                $stmt_del_app->execute();
+
+                // 4. Delete the patient record
+                $query_del_patient = "DELETE FROM patients WHERE id = :client_id";
+                $stmt_del_patient = $conn->prepare($query_del_patient);
+                $stmt_del_patient->bindParam(':client_id', $client_id, PDO::PARAM_INT);
+                $stmt_del_patient->execute();
+
+                $conn->commit();
+
+                // Redirect after successful deletion
+                $_SESSION['flash_message'] = "Client (ID: $client_id) and all associated data deleted successfully.";
+                $_SESSION['flash_message_class'] = 'alert-success';
+                header("Location: client_history.php");
+                exit;
+            }
+
+        } elseif (isset($_POST['delete_client']) && $_SESSION['role'] !== 'admin') {
+            $message = "You do not have permission to delete clients.";
+            $message_class = 'alert-danger';
+        }
+
+    } catch (PDOException $e) {
+        if ($conn->inTransaction()) {
+            $conn->rollBack();
+        }
+        $message = "Database error processing request: " . $e->getMessage();
+        $message_class = 'alert-danger';
+    } catch (Exception $e) {
+        $message = "An error occurred: " . $e->getMessage();
+        $message_class = 'alert-danger';
     }
-    header("Location: client_details.php?client_id=$client_id"); // Redirect to show message
-    exit;
 }
 
-// --- Display Flash Message ---
-$flash_message = '';
+// Retrieve flash message if redirected - FIX THIS SECTION
 if (isset($_SESSION['flash_message'])) {
-    $flash_message = $_SESSION['flash_message'];
-    unset($_SESSION['flash_message']); // Clear message after displaying
-}
-
-// Function to get status badge class (copied from manage appointments)
-function getStatusBadgeClass($status)
-{
-    switch (strtolower($status)) {
-        case 'completed':
-            return 'bg-success';
-        case 'canceled':
-            return 'bg-danger';
-        case 'pending':
-            return 'bg-warning text-dark';
-        default:
-            return 'bg-secondary';
+    // Check if it's an array (from edit_patient.php) or string (from other sources)
+    if (is_array($_SESSION['flash_message'])) {
+        $message = $_SESSION['flash_message']['text'] ?? 'Operation completed.';
+        $message_class = $_SESSION['flash_message']['type'] === 'success' ? 'alert-success' : 'alert-info';
+    } else {
+        // Handle legacy string format
+        $message = $_SESSION['flash_message'];
+        $message_class = $_SESSION['flash_message_class'] ?? 'alert-info';
     }
+
+    // Clean up session variables
+    unset($_SESSION['flash_message']);
+    unset($_SESSION['flash_message_class']);
 }
 
 ?>
 
-<!-- Page Title -->
+<!-- Page Title & Actions -->
 <div class="d-flex justify-content-between align-items-center mb-4">
-    <h2 class="m-0"><i class="fas fa-user-circle me-2 text-primary"></i> <?php echo $page_title; ?></h2>
+    <h2 class="m-0"><?php echo htmlspecialchars($page_title); ?></h2>
     <div>
-        <a href="client_history.php" class="btn btn-secondary me-2"><i class="fas fa-arrow-left me-1"></i> Back to
-            Search</a>
-        <a href="edit_patient.php?id=<?php echo $client_id; ?>" class="btn btn-warning"><i class="fas fa-edit me-1"></i>
-            Edit Patient</a>
+        <a href="client_history.php" class="btn btn-outline-secondary me-2">
+            <i class="fas fa-search me-2"></i> Back to Search
+        </a>
+        <?php if ($client): ?>
+            <a href="edit_patient.php?id=<?php echo $client_id; ?>" class="btn btn-outline-primary me-2">
+                <i class="fas fa-edit me-1"></i> Edit Client
+            </a>
+            <?php if ($_SESSION['role'] === 'admin' && $client['user_id'] != $_SESSION['user_id']): ?>
+                <button type="button" class="btn btn-danger" data-bs-toggle="modal" data-bs-target="#deleteClientModal">
+                    <i class="fas fa-trash-alt me-2"></i> Delete Client
+                </button>
+            <?php endif; ?>
+        <?php endif; ?>
     </div>
 </div>
 
-<!-- Display Errors / Messages -->
-<?php if ($flash_message): ?>
-    <div class="alert alert-<?php echo htmlspecialchars($flash_message['type']); ?> alert-dismissible fade show"
-        role="alert">
-        <?php echo htmlspecialchars($flash_message['text']); ?>
+<!-- Display Message -->
+<?php if ($message): ?>
+    <div class="alert <?php echo htmlspecialchars($message_class); ?> alert-dismissible fade show" role="alert"
+        data-auto-dismiss="8000">
+        <?php echo htmlspecialchars($message); ?>
         <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
     </div>
 <?php endif; ?>
-<?php if ($error_message): // Show fetch error only if no flash message ?>
-    <div class="alert alert-danger"><?php echo $error_message; ?></div>
-<?php endif; ?>
 
+<?php if ($client): ?>
 
-<?php if ($client && !$error_message): // Only display content if client was found and no fetch error ?>
-    <div class="row">
-        <!-- Left Column: Client Info & Stats -->
-        <div class="col-lg-4 mb-4">
-            <!-- Client Information Card -->
-            <div class="card shadow-sm mb-4">
-                <div class="card-header bg-light">
-                    <h5 class="mb-0"><i class="fas fa-id-card me-2"></i> Client Information</h5>
-                </div>
-                <div class="card-body">
-                    <dl class="row mb-0">
-                        <dt class="col-sm-5"><i class="fas fa-user fa-fw me-1 text-muted"></i> Name:</dt>
-                        <dd class="col-sm-7">
-                            <?php echo htmlspecialchars($client['first_name'] . ' ' . $client['last_name']); ?></dd>
-
-                        <dt class="col-sm-5"><i class="fas fa-phone fa-fw me-1 text-muted"></i> Contact:</dt>
-                        <dd class="col-sm-7"><?php echo htmlspecialchars($client['contact_number'] ?: 'N/A'); ?></dd>
-
-                        <dt class="col-sm-5"><i class="fas fa-map-marker-alt fa-fw me-1 text-muted"></i> Address:</dt>
-                        <dd class="col-sm-7"><?php echo htmlspecialchars($client['address'] ?: 'N/A'); ?></dd>
-
-                        <dt class="col-sm-5"><i class="fas fa-calendar-alt fa-fw me-1 text-muted"></i> Registered:</dt>
-                        <dd class="col-sm-7">
-                            <?php echo htmlspecialchars(date('M j, Y', strtotime($client['created_at']))); ?></dd>
-                    </dl>
-                </div>
-            </div>
-
-            <!-- Financial Summary Card -->
-            <div class="card shadow-sm text-center">
-                <div class="card-header bg-light">
-                    <h5 class="mb-0"><i class="fas fa-dollar-sign me-2 text-success"></i> Financial Summary</h5>
-                </div>
-                <div class="card-body">
-                    <h6 class="text-muted">Total Spent (Completed)</h6>
-                    <p class="h2 fw-bold text-success">$<?php echo number_format($total_spent ?? 0, 2); ?></p>
-                    <!-- Add more stats if needed, e.g., pending amount -->
-                </div>
-            </div>
+    <!-- Client Information Card -->
+    <div class="card shadow-sm mb-4">
+        <div class="card-header">
+            <i class="fas fa-user-circle me-2"></i> Client Information
         </div>
+        <div class="card-body">
+            <div class="row">
+                <div class="col-md-6">
+                    <p class="mb-1"><strong>Name:</strong></p>
+                    <p class="text-muted">
+                        <?php echo htmlspecialchars($client['first_name'] . ' ' . $client['last_name']); ?>
+                    </p>
 
-        <!-- Right Column: Appointments & Graphs -->
-        <div class="col-lg-8 mb-4">
-            <!-- Appointment History Card -->
-            <div class="card shadow-sm mb-4">
-                <div class="card-header bg-light">
-                    <h5 class="mb-0"><i class="fas fa-history me-2"></i> Appointment History</h5>
+                    <p class="mb-1"><strong>Contact:</strong></p>
+                    <p class="text-muted"><?php echo htmlspecialchars($client['contact_number'] ?: 'N/A'); ?></p>
                 </div>
-                <div class="card-body">
-                    <?php if (empty($appointments)): ?>
-                        <p class="text-muted text-center">No appointment history found for this client.</p>
-                    <?php else: ?>
-                        <div class="table-responsive">
-                            <table class="table table-striped table-hover align-middle">
-                                <thead class="table-light text-center">
-                                    <tr>
-                                        <th>Date</th>
-                                        <th>Doctor</th>
-                                        <th>Service</th>
-                                        <th>Status</th>
-                                        <th>Price</th>
-                                        <th>Actions</th>
-                                    </tr>
-                                </thead>
-                                <tbody class="text-center">
-                                    <?php foreach ($appointments as $appointment): ?>
-                                        <tr>
-                                            <td class="text-nowrap">
-                                                <?php echo htmlspecialchars(date('M j, Y h:i A', strtotime($appointment['appointment_date']))); ?>
-                                            </td>
-                                            <td><?php echo htmlspecialchars($appointment['doctor_name']); ?></td>
-                                            <td><?php echo htmlspecialchars($appointment['service_name']); ?></td>
-                                            <td>
-                                                <span class="badge <?php echo getStatusBadgeClass($appointment['status']); ?>">
-                                                    <?php echo ucfirst(htmlspecialchars($appointment['status'])); ?>
-                                                </span>
-                                            </td>
-                                            <td>$<?php echo number_format($appointment['service_price'] ?? 0, 2); ?></td>
-                                            <td>
-                                                <a href="view_appointment.php?id=<?php echo $appointment['appointment_id']; ?>"
-                                                    class="btn btn-outline-info btn-sm" data-bs-toggle="tooltip"
-                                                    title="View Details">
-                                                    <i class="fas fa-eye"></i>
-                                                </a>
-                                                <!-- Add edit link if needed -->
-                                                <a href="edit_appointment.php?id=<?php echo $appointment['appointment_id']; ?>"
-                                                    class="btn btn-outline-warning btn-sm" data-bs-toggle="tooltip" title="Edit">
-                                                    <i class="fas fa-edit"></i>
-                                                </a>
-                                            </td>
-                                        </tr>
-                                    <?php endforeach; ?>
-                                </tbody>
-                            </table>
-                        </div>
-                    <?php endif; ?>
+                <div class="col-md-6">
+                    <p class="mb-1"><strong>Email:</strong></p>
+                    <p class="text-muted"><?php echo htmlspecialchars($client['email'] ?: 'N/A'); ?></p>
+
+                    <p class="mb-1"><strong>Address:</strong></p>
+                    <p class="text-muted"><?php echo htmlspecialchars($client['address'] ?: 'N/A'); ?></p>
+                </div>
+                <div class="col-12 mt-2">
+                    <p class="mb-1"><strong>Total Spent (Completed Appointments):</strong></p>
+                    <h4 class="text-success">$<?php echo number_format($total_spent ?? 0, 2); ?></h4>
                 </div>
             </div>
+            <a href="edit_patient.php?id=<?php echo $client_id; ?>" class="btn btn-sm btn-outline-secondary mt-2">
+                <i class="fas fa-edit me-1"></i> Edit Client Info
+            </a>
+        </div>
+    </div>
 
-            <!-- Teeth Graphs Card -->
-            <div class="card shadow-sm mb-4">
-                <div class="card-header bg-light d-flex justify-content-between align-items-center">
-                    <h5 class="mb-0"><i class="fas fa-tooth me-2"></i> Teeth Graphs</h5>
-                    <button type="button" class="btn btn-success btn-sm" data-bs-toggle="modal"
-                        data-bs-target="#uploadGraphModal">
-                        <i class="fas fa-upload me-1"></i> Upload New Graph
-                    </button>
-                </div>
-                <div class="card-body">
-                    <?php if (empty($teeth_graphs)): ?>
-                        <p class="text-muted text-center">No teeth graphs uploaded for this client.</p>
-                    <?php else: ?>
-                        <div class="row row-cols-1 row-cols-sm-2 row-cols-md-3 g-3">
-                            <?php foreach ($teeth_graphs as $graph): ?>
-                                <div class="col">
-                                    <div class="card h-100 shadow-sm">
-                                        <a href="<?php echo htmlspecialchars($graph['image_url']); ?>" data-bs-toggle="tooltip"
-                                            title="Click to view larger" target="_blank">
-                                            <img src="<?php echo htmlspecialchars($graph['image_url']); ?>" class="card-img-top"
-                                                alt="Teeth Graph" style="aspect-ratio: 4/3; object-fit: cover;">
+    <!-- Appointment History Card -->
+    <div class="card shadow-sm mb-4">
+        <div class="card-header">
+            <i class="fas fa-calendar-alt me-2"></i> Appointment History
+        </div>
+        <div class="card-body p-0">
+            <?php if (empty($appointments)): ?>
+                <p class="text-muted text-center p-3">No appointment history found for this client.</p>
+            <?php else: ?>
+                <div class="table-responsive">
+                    <table class="table table-striped table-hover align-middle mb-0">
+                        <thead class="table-light">
+                            <tr>
+                                <th>Date & Time</th>
+                                <th>Doctor</th>
+                                <th>Service</th>
+                                <th class="text-center">Status</th>
+                                <th class="text-end">Price</th>
+                                <th class="text-center">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php foreach ($appointments as $appointment): ?>
+                                <tr>
+                                    <td><?php echo htmlspecialchars(date('d M Y, h:i A', strtotime($appointment['appointment_date']))); ?>
+                                    </td>
+                                    <td><?php echo htmlspecialchars($appointment['doctor_name']); ?></td>
+                                    <td><?php echo htmlspecialchars($appointment['service_name']); ?></td>
+                                    <td class="text-center">
+                                        <span class="badge rounded-pill <?php
+                                        switch ($appointment['status']) {
+                                            case 'completed':
+                                                echo 'bg-success';
+                                                break;
+                                            case 'canceled':
+                                                echo 'bg-danger';
+                                                break;
+                                            default:
+                                                echo 'bg-warning text-dark';
+                                                break;
+                                        }
+                                        ?>">
+                                            <?php echo ucfirst(htmlspecialchars($appointment['status'])); ?>
+                                        </span>
+                                    </td>
+                                    <td class="text-end">$<?php echo number_format($appointment['service_price'], 2); ?></td>
+                                    <td class="text-center">
+                                        <a href="view_appointment.php?id=<?php echo $appointment['appointment_id']; ?>"
+                                            class="btn btn-sm btn-outline-info" data-bs-toggle="tooltip" title="View Appointment">
+                                            <i class="fas fa-eye"></i>
                                         </a>
-                                        <div class="card-body pb-2">
-                                            <p class="card-text small text-muted">
-                                                <?php echo htmlspecialchars($graph['description'] ?: 'No description'); ?></p>
-                                        </div>
-                                        <div class="card-footer bg-white border-0 pt-0 text-end">
-                                            <form action="client_details.php?client_id=<?php echo $client_id; ?>" method="POST"
-                                                class="d-inline"
-                                                onsubmit="return confirm('Are you sure you want to delete this graph?');">
-                                                <input type="hidden" name="graph_id" value="<?php echo $graph['id']; ?>">
-                                                <input type="hidden" name="image_url"
-                                                    value="<?php echo htmlspecialchars($graph['image_url']); ?>">
-                                                <button type="submit" name="delete_graph" class="btn btn-outline-danger btn-sm"
-                                                    data-bs-toggle="tooltip" title="Delete Graph">
-                                                    <i class="fas fa-trash-alt"></i>
-                                                </button>
-                                            </form>
-                                        </div>
-                                    </div>
-                                </div>
+                                    </td>
+                                </tr>
                             <?php endforeach; ?>
-                        </div>
-                    <?php endif; ?>
+                        </tbody>
+                    </table>
                 </div>
-            </div>
-        </div> <!-- /col-lg-8 -->
-    </div> <!-- /row -->
+            <?php endif; ?>
+        </div>
+        <div class="card-footer text-end">
+            <a href="add_appointment.php?patient_id=<?php echo $client_id; ?>" class="btn btn-primary">
+                <i class="fas fa-plus me-2"></i> Add New Appointment for Client
+            </a>
+        </div>
+    </div>
 
-    <!-- Upload New Teeth Graph Modal -->
-    <div class="modal fade" id="uploadGraphModal" tabindex="-1" aria-labelledby="uploadGraphModalLabel" aria-hidden="true">
-        <div class="modal-dialog modal-dialog-centered">
-            <div class="modal-content">
-                <form action="client_details.php?client_id=<?php echo $client_id; ?>" method="POST"
-                    enctype="multipart/form-data">
-                    <input type="hidden" name="upload_graph" value="1">
-                    <div class="modal-header">
-                        <h5 class="modal-title" id="uploadGraphModalLabel"><i class="fas fa-upload me-2"></i> Upload New
-                            Teeth Graph</h5>
-                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-                    </div>
-                    <div class="modal-body">
+    <!-- Teeth Graphs Card -->
+    <div class="card shadow-sm mb-4">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <span><i class="fas fa-tooth me-2"></i> Teeth Graphs</span>
+            <button class="btn btn-sm btn-success" type="button" data-bs-toggle="collapse"
+                data-bs-target="#uploadGraphCollapse" aria-expanded="false" aria-controls="uploadGraphCollapse">
+                <i class="fas fa-upload me-1"></i> Upload New Graph
+            </button>
+        </div>
+        <div class="card-body">
+            <!-- Upload Form (Collapsible) -->
+            <div class="collapse mb-4" id="uploadGraphCollapse">
+                <div class="card card-body bg-light border">
+                    <h6 class="mb-3">Upload New Teeth Graph</h6>
+                    <form action="<?php echo htmlspecialchars($_SERVER['PHP_SELF']) . '?client_id=' . $client_id; ?>"
+                        method="POST" enctype="multipart/form-data">
                         <div class="mb-3">
-                            <label for="description" class="form-label">Description</label>
-                            <input type="text" class="form-control" id="description" name="description">
-                            <small class="text-muted">Optional description for the graph.</small>
+                            <label for="description" class="form-label">Description <span
+                                    class="text-danger">*</span></label>
+                            <input type="text" class="form-control" id="description" name="description" required>
                         </div>
                         <div class="mb-3">
                             <label for="image" class="form-label">Image File <span class="text-danger">*</span></label>
                             <input type="file" class="form-control" id="image" name="image"
                                 accept="image/jpeg,image/png,image/gif,image/webp" required>
-                            <small class="text-muted">Allowed types: JPG, PNG, GIF, WEBP. Max size: 5MB.</small>
+                            <small class="text-muted">Allowed types: JPG, PNG, GIF, WEBP. Max 5MB.</small>
                         </div>
-                    </div>
-                    <div class="modal-footer">
-                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal"><i
-                                class="fas fa-times me-1"></i> Cancel</button>
-                        <button type="submit" class="btn btn-primary"><i class="fas fa-upload me-1"></i> Upload</button>
-                    </div>
-                </form>
+                        <button type="submit" class="btn btn-primary" name="upload_graph"><i
+                                class="fas fa-upload me-2"></i>Upload</button>
+                    </form>
+                </div>
             </div>
+
+            <!-- Display Existing Graphs -->
+            <?php if (empty($teeth_graphs)): ?>
+                <p class="text-muted text-center">No teeth graphs uploaded for this client.</p>
+            <?php else: ?>
+                <div class="row row-cols-1 row-cols-sm-2 row-cols-md-3 row-cols-lg-4 g-3">
+                    <?php foreach ($teeth_graphs as $graph): ?>
+                        <div class="col">
+                            <div class="card h-100 shadow-sm">
+                                <a href="#" data-bs-toggle="modal" data-bs-target="#graphModal<?php echo $graph['id']; ?>">
+                                    <img src="<?php echo htmlspecialchars($graph['image_url']); ?>" class="card-img-top"
+                                        alt="Teeth Graph <?php echo $graph['id']; ?>" style="max-height: 200px; object-fit: cover;">
+                                </a>
+                                <div class="card-body d-flex flex-column">
+                                    <p class="card-text small text-muted flex-grow-1">
+                                        <?php echo htmlspecialchars($graph['description']); ?>
+                                    </p>
+                                    <small class="text-muted d-block mb-2">Uploaded:
+                                        <?php echo date('d M Y', strtotime($graph['created_at'])); ?></small>
+                                    <form
+                                        action="<?php echo htmlspecialchars($_SERVER['PHP_SELF']) . '?client_id=' . $client_id; ?>"
+                                        method="POST" onsubmit="return confirm('Are you sure you want to delete this graph?');">
+                                        <input type="hidden" name="graph_id" value="<?php echo $graph['id']; ?>">
+                                        <button type="submit" name="delete_graph"
+                                            class="btn btn-outline-danger btn-sm w-100 confirm-delete"
+                                            data-message="Are you sure you want to delete this graph: <?php echo htmlspecialchars($graph['description']); ?>?">
+                                            <i class="fas fa-trash-alt me-1"></i> Delete Graph
+                                        </button>
+                                    </form>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Image Modal -->
+                        <div class="modal fade" id="graphModal<?php echo $graph['id']; ?>" tabindex="-1"
+                            aria-labelledby="graphModalLabel<?php echo $graph['id']; ?>" aria-hidden="true">
+                            <div class="modal-dialog modal-lg modal-dialog-centered">
+                                <div class="modal-content">
+                                    <div class="modal-header">
+                                        <h5 class="modal-title" id="graphModalLabel<?php echo $graph['id']; ?>">
+                                            <?php echo htmlspecialchars($graph['description']); ?>
+                                        </h5>
+                                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                                    </div>
+                                    <div class="modal-body text-center">
+                                        <img src="<?php echo htmlspecialchars($graph['image_url']); ?>" class="img-fluid"
+                                            alt="Teeth Graph <?php echo $graph['id']; ?>">
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                    <?php endforeach; ?>
+                </div>
+            <?php endif; ?>
         </div>
     </div>
 
-<?php endif; // End check for client && !$error_message ?>
+    <!-- Delete Client Confirmation Modal (for Admin only) -->
+    <?php if ($_SESSION['role'] === 'admin' && $client && $client['user_id'] != $_SESSION['user_id']): ?>
+        <div class="modal fade" id="deleteClientModal" tabindex="-1" aria-labelledby="deleteClientModalLabel"
+            aria-hidden="true">
+            <div class="modal-dialog modal-dialog-centered">
+                <div class="modal-content">
+                    <form action="<?php echo htmlspecialchars($_SERVER['PHP_SELF']) . '?client_id=' . $client_id; ?>"
+                        method="POST">
+                        <div class="modal-header bg-danger text-white">
+                            <h5 class="modal-title" id="deleteClientModalLabel"><i class="fas fa-exclamation-triangle me-2"></i>
+                                Confirm Client Deletion</h5>
+                            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"
+                                aria-label="Close"></button>
+                        </div>
+                        <div class="modal-body">
+                            <p>Are you absolutely sure you want to delete client
+                                <strong><?php echo htmlspecialchars($client['first_name'] . ' ' . $client['last_name']); ?></strong>
+                                (ID: <?php echo $client_id; ?>)?
+                            </p>
+                            <p class="text-danger fw-bold">This action cannot be undone. All associated appointments and teeth
+                                graphs will also be permanently deleted.</p>
+                        </div>
+                        <div class="modal-footer"></div>
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                        <button type="submit" name="delete_client" class="btn btn-danger"><i class="fas fa-trash-alt me-2"></i>
+                            Yes, Delete Client</button>
+                </div>
+                </form>
+            </div>
+        </div>
+        </div>
+    <?php endif; ?>
 
-<?php
-include '../includes/footer.php'; // Include the shared footer
-?>
+<?php endif; ?>
+
+<!-- Initialize Bootstrap Tooltips -->
+<script>
+    document.addEventListener('DOMContentLoaded', function () {
+        var tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'))
+        var tooltipList = tooltipTriggerList.map(function (tooltipTriggerEl) {
+            return new bootstrap.Tooltip(tooltipTriggerEl)
+        })
+    });
+</script>
+
+<?php include '../includes/footer.php'; ?>

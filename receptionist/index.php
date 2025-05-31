@@ -139,9 +139,6 @@ $chart_data = array_values($date_map); // Get counts in the correct order
                 <!-- Changed link to receptionist's add appointment page -->
                 <a href="add_appointment.php" class="btn btn-primary m-2"><i class="fas fa-calendar-plus me-1"></i> Book
                     Appointment</a>
-                <!-- Link to manage patients (assuming this page exists or will be created) -->
-                <a href="manage_patients.php" class="btn btn-info m-2"><i class="fas fa-users me-1"></i> Manage
-                    Patients</a>
                 <!-- Added link to add patient page -->
                 <a href="add_patient.php" class="btn btn-success m-2"><i class="fas fa-user-plus me-1"></i> Add New
                     Patient</a>
@@ -151,7 +148,8 @@ $chart_data = array_values($date_map); // Get counts in the correct order
                 <!-- Added link to client history/search page -->
                 <a href="client_history.php" class="btn btn-purple m-2"><i class="fas fa-search me-1"></i> Search
                     Patients</a>
-
+                <!-- Add Export Reports button -->
+                <a href="export.php" class="btn btn-warning m-2"><i class="fas fa-download me-1"></i> Export Reports</a>
             </div>
         </div>
     </div>
@@ -161,22 +159,18 @@ $chart_data = array_values($date_map); // Get counts in the correct order
 <!-- Dashboard Metrics -->
 <div class="row mb-4">
     <div class="col-6 col-lg-3 mb-4">
-        <div class="card shadow-sm h-100 text-center border-start border-primary border-4">
+        <div class="card shadow-sm h-100 text-center border-start border-primary border-4 metric-card">
             <div class="card-body">
-                <div class="text-xs fw-bold text-primary text-uppercase mb-1">Total Patients</div>
-                <div class="h3 mb-0 fw-bold text-gray-800"><?php echo $total_patients; ?></div>
-            </div>
-            <div class="card-footer bg-white border-0 pt-0">
-                <a href="manage_patients.php" class="text-primary small">View Details <i
-                        class="fas fa-arrow-circle-right"></i></a>
+                <div class="text-xs fw-bold text-primary text-uppercase mb-1 metric-label">Total Patients</div>
+                <div class="h3 mb-0 fw-bold text-gray-800 metric-value"><?php echo $total_patients; ?></div>
             </div>
         </div>
     </div>
     <div class="col-6 col-lg-3 mb-4">
-        <div class="card shadow-sm h-100 text-center border-start border-info border-4">
+        <div class="card shadow-sm h-100 text-center border-start border-info border-4 metric-card">
             <div class="card-body">
-                <div class="text-xs fw-bold text-info text-uppercase mb-1">Total Appointments</div>
-                <div class="h3 mb-0 fw-bold text-gray-800"><?php echo $total_appointments; ?></div>
+                <div class="text-xs fw-bold text-info text-uppercase mb-1 metric-label">Total Appointments</div>
+                <div class="h3 mb-0 fw-bold text-gray-800 metric-value"><?php echo $total_appointments; ?></div>
             </div>
             <div class="card-footer bg-white border-0 pt-0">
                 <a href="manage_appointments.php" class="text-info small">View Details <i
@@ -185,10 +179,10 @@ $chart_data = array_values($date_map); // Get counts in the correct order
         </div>
     </div>
     <div class="col-6 col-lg-3 mb-4">
-        <div class="card shadow-sm h-100 text-center border-start border-warning border-4">
+        <div class="card shadow-sm h-100 text-center border-start border-warning border-4 metric-card">
             <div class="card-body">
-                <div class="text-xs fw-bold text-warning text-uppercase mb-1">Pending Appointments</div>
-                <div class="h3 mb-0 fw-bold text-gray-800"><?php echo $pending_appointments; ?></div>
+                <div class="text-xs fw-bold text-warning text-uppercase mb-1 metric-label">Pending Appointments</div>
+                <div class="h3 mb-0 fw-bold text-gray-800 metric-value"><?php echo $pending_appointments; ?></div>
             </div>
             <div class="card-footer bg-white border-0 pt-0">
                 <a href="manage_appointments.php?status=pending" class="text-warning small">View Details <i
@@ -197,10 +191,10 @@ $chart_data = array_values($date_map); // Get counts in the correct order
         </div>
     </div>
     <div class="col-6 col-lg-3 mb-4">
-        <div class="card shadow-sm h-100 text-center border-start border-success border-4">
+        <div class="card shadow-sm h-100 text-center border-start border-success border-4 metric-card">
             <div class="card-body">
-                <div class="text-xs fw-bold text-success text-uppercase mb-1">Completed Appointments</div>
-                <div class="h3 mb-0 fw-bold text-gray-800"><?php echo $completed_appointments; ?></div>
+                <div class="text-xs fw-bold text-success text-uppercase mb-1 metric-label">Completed Appointments</div>
+                <div class="h3 mb-0 fw-bold text-gray-800 metric-value"><?php echo $completed_appointments; ?></div>
             </div>
             <div class="card-footer bg-white border-0 pt-0">
                 <a href="manage_appointments.php?status=completed" class="text-success small">View Details <i
@@ -272,7 +266,7 @@ $chart_data = array_values($date_map); // Get counts in the correct order
                 <?php if ($top_patient): ?>
                     <h4 class="text-truncate"><?php echo htmlspecialchars($top_patient['patient_name']); ?></h4>
                     <p class="h5 text-muted"><?php echo $top_patient['count']; ?> appointments</p>
-                    <a href="patient_details.php?patient_id=<?php echo $top_patient['id']; ?>" class="mt-2 small">View
+                    <a href="client_details.php?patient_id=<?php echo $top_patient['id']; ?>" class="mt-2 small">View
                         History <i class="fas fa-external-link-alt"></i></a>
                 <?php else: ?>
                     <p class="text-muted">No appointment data available.</p>
@@ -331,18 +325,94 @@ $chart_data = array_values($date_map); // Get counts in the correct order
 include '../includes/footer.php'; // Include the shared footer
 ?>
 
-<!-- Add custom style for purple button if needed (e.g., in your main CSS or <style> block) -->
+<!-- Page-Specific CSS (Load after global CSS from header) -->
 <style>
+    /* Dashboard-specific styles to match admin dashboard */
+    .metric-card {
+        transition: transform 0.2s, box-shadow 0.2s;
+        border: none;
+        border-radius: 0.75rem;
+    }
+
+    .metric-card:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 25px 0 rgba(0, 0, 0, 0.1);
+    }
+
+    .metric-value {
+        font-size: 2rem;
+        font-weight: 700;
+        color: #2c3e50;
+    }
+
+    .metric-label {
+        font-size: 0.875rem;
+        font-weight: 500;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+
+    .icon-circle {
+        width: 60px;
+        height: 60px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 1.5rem;
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+    }
+
+    .bg-primary-soft {
+        background-color: rgba(13, 110, 253, 0.1);
+    }
+
+    .bg-success-soft {
+        background-color: rgba(25, 135, 84, 0.1);
+    }
+
+    .chart-area {
+        position: relative;
+    }
+
+    .chart-area canvas {
+        max-width: 100%;
+        max-height: 100%;
+    }
+
     .btn-purple {
         color: #fff;
         background-color: #6f42c1;
-        /* Bootstrap purple */
         border-color: #6f42c1;
+        transition: all 0.2s;
     }
 
     .btn-purple:hover {
         color: #fff;
         background-color: #5a34a0;
         border-color: #533093;
+        transform: translateY(-1px);
+        box-shadow: 0 2px 8px rgba(111, 66, 193, 0.3);
+    }
+
+    .text-gray-800 {
+        color: #2c3e50 !important;
+    }
+
+    .card {
+        transition: transform 0.2s, box-shadow 0.2s;
+    }
+
+    .card:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 25px 0 rgba(0, 0, 0, 0.1);
+    }
+
+    .border-start {
+        border-left: 4px solid !important;
+    }
+
+    .text-xs {
+        font-size: 0.75rem;
     }
 </style>
